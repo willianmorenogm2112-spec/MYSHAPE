@@ -1,0 +1,7 @@
+{
+  "name": "Shape Analyzer AI",
+  "description": "Analise seu físico com inteligência artificial. Receba feedback sobre simetria, definição e dicas de treino baseadas no seu shape.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
