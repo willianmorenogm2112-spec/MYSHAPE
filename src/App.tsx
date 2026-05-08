@@ -496,7 +496,7 @@ export default function App() {
     setIsScanning(true);
     setError(null);
     
-    // Simulate scanning animation for 3 seconds
+    // Simulate scanning animation for 1.5 seconds
     setTimeout(async () => {
       setIsAnalyzing(true);
       try {
@@ -517,14 +517,14 @@ export default function App() {
           consistency: 0,
           photo: images.front
         }]);
-      } catch (err) {
+      } catch (err: any) {
         console.error(err);
-        setError('Erro ao analisar o shape. Verifique sua conexão ou chave de API.');
+        setError(err.message || 'Erro ao analisar o shape. Verifique sua conexão ou chave de API.');
       } finally {
         setIsAnalyzing(false);
         setIsScanning(false);
       }
-    }, 3000);
+    }, 1500);
   };
 
   const handleSendMessage = async (msg?: string) => {
@@ -1170,6 +1170,12 @@ export default function App() {
                   >
                     {isScanning ? 'Escaneando...' : (isAnalyzing ? 'Processando Biometria...' : (!isPremium && analysisCount >= 3 ? 'Limite Mensal Atingido' : 'Iniciar Análise Pro'))}
                   </button>
+                  
+                  {error && (
+                    <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-[10px] font-bold text-center animate-pulse">
+                      {error}
+                    </div>
+                  )}
 
                   <div className="p-4 bg-white/5 border border-white/10 rounded-2xl">
                     <div className="flex justify-between items-center mb-2">
