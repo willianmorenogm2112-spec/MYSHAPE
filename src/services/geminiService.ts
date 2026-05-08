@@ -1,10 +1,10 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const API_KEY = process.env.GEMINI_API_KEY || "";
+const API_KEY = import.meta.env.VITE_GEMINI_API_KEY || (process.env.GEMINI_API_KEY as string) || "";
 
 export const analyzeShape = async (images: { front?: string; back?: string; side?: string }, profile: { weight: number; goal: string }, isPump: boolean = false) => {
   if (!API_KEY) {
-    throw new Error("API Key not found. Please add GEMINI_API_KEY to secrets.");
+    throw new Error("Chave de API não encontrada. Por favor, adicione VITE_GEMINI_API_KEY.");
   }
 
   const ai = new GoogleGenAI({ apiKey: API_KEY });
@@ -82,7 +82,7 @@ export const analyzeShape = async (images: { front?: string; back?: string; side
   }
 
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-flash-latest",
     contents: [{ parts }],
     config: {
       responseMimeType: "application/json",
@@ -99,7 +99,7 @@ export const projectShape = async (image: string, type: 'fat-loss' | 'muscle-gai
     : "Edite esta imagem para simular como o corpo ficaria com +5kg de massa muscular magra, aumentando o volume dos ombros, peito e braços, mantendo a definição.";
 
   const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash-image',
+    model: 'gemini-flash-latest',
     contents: {
       parts: [
         { inlineData: { data: image.split(",")[1], mimeType: "image/jpeg" } },
@@ -119,7 +119,7 @@ export const projectShape = async (image: string, type: 'fat-loss' | 'muscle-gai
 export const generatePersonalizedTraining = async (analysis: any, profile: any, quizAnswers: any) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-flash-latest",
     contents: `Você é um treinador de elite. Com base na análise do físico: ${JSON.stringify(analysis)} 
     e no perfil do usuário: ${JSON.stringify(profile)}, crie um plano de treinamento semanal PREMIUM e ESPECÍFICO.
     Respostas do Quiz do Usuário: ${JSON.stringify(quizAnswers)}
@@ -170,7 +170,7 @@ export const generatePersonalizedTraining = async (analysis: any, profile: any, 
 export const analyzeFoodPhoto = async (image: string) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-flash-latest",
     contents: [
       { inlineData: { data: image.split(",")[1], mimeType: "image/jpeg" } },
       { text: `Analise esta foto de comida. Identifique os alimentos, estime o peso de cada um e calcule os macros.
@@ -205,7 +205,7 @@ export const analyzeFoodPhoto = async (image: string) => {
 export const analyzeExerciseVideo = async (videoData: string) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-flash-latest",
     contents: [
       { inlineData: { data: videoData.split(",")[1], mimeType: "video/mp4" } },
       { text: `Analise a biomecânica deste exercício. Identifique erros de execução e forneça correções pontuais.
@@ -229,7 +229,7 @@ export const analyzeExerciseVideo = async (videoData: string) => {
 export const generateMealPlan = async (analysis: any, profile: any, dietAnswers: any) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-flash-latest",
     contents: `Você é um nutricionista esportivo de elite. Com base na análise do físico: ${JSON.stringify(analysis)} 
     e no perfil do usuário: ${JSON.stringify(profile)}, crie um plano de refeições diário detalhado.
     Respostas do Quiz de Dieta: ${JSON.stringify(dietAnswers)}
@@ -273,7 +273,7 @@ export const generateMealPlan = async (analysis: any, profile: any, dietAnswers:
 export const getExerciseDetails = async (exerciseName: string) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-flash-latest",
     contents: `Explique a execução perfeita do exercício "${exerciseName}".
     Inclua:
     1. Posição Inicial
@@ -288,7 +288,7 @@ export const getExerciseDetails = async (exerciseName: string) => {
 export const generateShoppingList = async (mealPlan: any) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-flash-latest",
     contents: `Com base no plano de refeições: ${JSON.stringify(mealPlan)}, gere uma lista de compras inteligente organizada por categorias (Proteínas, Carboidratos, Gorduras, Vegetais/Frutas, Outros).
     Estime as quantidades necessárias para uma semana.
     
@@ -315,7 +315,7 @@ export const generateShoppingList = async (mealPlan: any) => {
 export const generateRouteDayPlan = async (profile: any, dietAnswers: any) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-flash-latest",
     contents: `O usuário vai passar o dia fora de casa (Dia de Rota). Com base no perfil: ${JSON.stringify(profile)} e objetivo: ${dietAnswers.objective}, forneça sugestões de refeições práticas que podem ser encontradas em restaurantes, self-services ou lojas de conveniência, mantendo a meta calórica e de macros.
     
     Retorne os dados estritamente no formato JSON seguindo este esquema:
@@ -346,7 +346,7 @@ export const generateRouteDayPlan = async (profile: any, dietAnswers: any) => {
 export const chatWithCoach = async (message: string, context?: any) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-flash-latest",
     contents: `Você é o motor do Shape Analyzer Pro. Sua missão é manter a interface limpa, funcional e converter o usuário para o Premium.
     Responda à dúvida do usuário de forma técnica e motivadora SEMPRE EM PORTUGUÊS DO BRASIL. 
     
