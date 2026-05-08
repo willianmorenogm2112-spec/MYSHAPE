@@ -1,5 +1,5 @@
 import React from 'react';
-import { motion } from 'framer-motion';
+import { motion } from 'motion/react';
 import { Zap, Activity, AlertTriangle, Shield, Thermometer } from 'lucide-react';
 
 interface TelemetryRingProps {
