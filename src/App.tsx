@@ -3,7 +3,7 @@ import {
   Upload, Camera, Zap, Target, Shield, Info, RefreshCw, 
   ChevronRight, Award, Dumbbell, Utensils, MessageSquare, 
   TrendingUp, TrendingDown, Scale, Calculator, Crown, Play, Box, Video, Trophy, Sparkles, Lock,
-  Droplets, Flame, Calendar, Check, Minus, Clock, X, Plus
+  Droplets, Flame, Calendar, Check, Minus, Clock, X, Plus, Activity
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
