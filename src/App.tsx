@@ -11,13 +11,15 @@ import {
   ResponsiveContainer
 } from 'recharts';
 import { analyzeShape, chatWithCoach, projectShape, generatePersonalizedTraining, generateMealPlan, getExerciseDetails, generateShoppingList, generateRouteDayPlan, analyzeFoodPhoto, analyzeExerciseVideo } from './services/geminiService';
+import { RecoveryDashboard } from './components/RecoveryDashboard';
+import { getWILLFSReadiness } from './services/recoveryService';
 import { ShapeAnalysis, UserProfile, EvolutionEntry, TrainingPlan, MealPlan } from './types';
 import Markdown from 'react-markdown';
 import rehypeRaw from 'rehype-raw';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer as RechartsResponsiveContainer } from 'recharts';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'analyze' | 'diet' | 'training' | 'coach' | 'evolution'>('analyze');
+  const [activeTab, setActiveTab] = useState<'analyze' | 'diet' | 'training' | 'coach' | 'evolution' | 'recovery'>('analyze');
   const [isCompetitionMode, setIsCompetitionMode] = useState(false);
   const [isPumpMode, setIsPumpMode] = useState(false);
   const [images, setImages] = useState<{ front?: string; back?: string; side?: string }>({});
@@ -53,6 +55,11 @@ export default function App() {
   const [lastTrainingGenerationDate, setLastTrainingGenerationDate] = useState<string | null>(null);
   const [waterIntake, setWaterIntake] = useState(0);
   const waterGoal = 3500; // 3.5 Liters
+  
+  // Recovery Engine State
+  const [muscleRecovery, setMuscleRecovery] = useState(82);
+  const [cnsReadiness, setCnsReadiness] = useState(91);
+  const readiness = getWILLFSReadiness(cnsReadiness, muscleRecovery);
 
   useEffect(() => {
     if (subscriptionExpiryDate) {
@@ -1040,6 +1047,12 @@ export default function App() {
               className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${activeTab === 'coach' ? 'bg-emerald-500 text-black' : 'hover:bg-white/5'}`}
             >
               Coach
+            </button>
+            <button 
+              onClick={() => setActiveTab('recovery')}
+              className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${activeTab === 'recovery' ? 'bg-emerald-500 text-black' : 'hover:bg-white/5'}`}
+            >
+              Recuperação
             </button>
           </div>
 
@@ -2616,6 +2629,24 @@ export default function App() {
               </div>
             </motion.div>
           )}
+
+          {activeTab === 'recovery' && (
+            <motion.div 
+              key="recovery"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="max-w-5xl mx-auto"
+            >
+              <RecoveryDashboard 
+                muscleRecovery={muscleRecovery} 
+                cnsReadiness={cnsReadiness} 
+                injuryRisk={readiness.injuryRisk}
+                recommendation={readiness.recommendation}
+                status={readiness.status}
+              />
+            </motion.div>
+          )}
         </AnimatePresence>
 
         <AnimatePresence>
@@ -2665,6 +2696,7 @@ export default function App() {
             { id: 'diet', icon: <Utensils className="w-5 h-5" />, label: 'Dieta' },
             { id: 'training', icon: <Dumbbell className="w-5 h-5" />, label: 'Treino' },
             { id: 'evolution', icon: <TrendingUp className="w-5 h-5" />, label: 'Evolução' },
+            { id: 'recovery', icon: <Activity className="w-5 h-5" />, label: 'Recuperação' },
             { id: 'coach', icon: <MessageSquare className="w-5 h-5" />, label: 'Coach' }
           ].map((tab) => (
             <button
