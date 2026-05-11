@@ -63,6 +63,54 @@ export interface UserProfile {
   completedWorkouts?: string[]; // ['2026-03-19', '2026-03-21']
   waterIntake?: number; // cups
   gymLevel?: 'Básica' | 'Média' | 'Elite';
+  age?: number;
+  gender?: 'Masculino' | 'Feminino' | 'Outro';
+  avatar?: string;
+  startDate?: string;
+}
+
+export interface WorkoutHistoryItem {
+  id: string;
+  date: string;
+  title: string;
+  muscles: string[];
+  exercisesCount: number;
+  duration: number;
+  completed: boolean;
+  exercises: {
+    name: string;
+    sets: { reps: number; weight: number }[];
+  }[];
+}
+
+export interface ShapeAnalysisHistoryItem extends ShapeAnalysis {
+  id: string;
+  date: string;
+  category: 'Iniciante' | 'Fitness' | 'Atlético' | 'Elite';
+  frontPhoto?: string;
+}
+
+export interface ProgressCheckIn {
+  id: string;
+  timestamp: number;
+  date: string;
+  weight: number;
+  bf?: number;
+  notes: string;
+  photos: {
+    front?: string;
+    back?: string;
+    side?: string;
+  };
+}
+
+export interface Badge {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  unlockedAt?: string;
+  locked: boolean;
 }
 
 export interface FoodAnalysis {

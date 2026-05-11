@@ -68,6 +68,10 @@ import {
   EvolutionEntry,
   TrainingPlan,
   MealPlan,
+  ShapeAnalysisHistoryItem,
+  ProgressCheckIn,
+  Badge,
+  WorkoutHistoryItem,
 } from "./types";
 import Markdown from "react-markdown";
 import rehypeRaw from "rehype-raw";
@@ -82,7 +86,9 @@ import {
   ResponsiveContainer as RechartsResponsiveContainer,
   PieChart,
   Pie,
-  Cell
+  Cell,
+  AreaChart,
+  Area
 } from "recharts";
 import confetti from "canvas-confetti";
 
@@ -97,8 +103,29 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<
-    "analyze" | "diet" | "training" | "coach" | "evolution" | "dashboard"
+    "analyze" | "diet" | "training" | "coach" | "profile" | "dashboard"
   >("dashboard");
+  const [profileTab, setProfileTab] = useState<"resumo" | "historico" | "fotos" | "musculos">("resumo");
+  const [historySubTab, setHistorySubTab] = useState<"treinos" | "analises">("treinos");
+  const [showProfileSettings, setShowProfileSettings] = useState(false);
+  const [showCheckInModal, setShowCheckInModal] = useState(false);
+  const [checkInPhotos, setCheckInPhotos] = useState<{front?: string, back?: string, side?: string}>({});
+  const [checkInWeight, setCheckInWeight] = useState(0);
+  const [checkInBf, setCheckInBf] = useState<number | "">("");
+  const [checkInNotes, setCheckInNotes] = useState("");
+  const [progressCheckIns, setProgressCheckIns] = useState<ProgressCheckIn[]>([]);
+  const [workoutHistory, setWorkoutHistory] = useState<WorkoutHistoryItem[]>([]);
+  const [analysisHistory, setAnalysisHistory] = useState<ShapeAnalysisHistoryItem[]>([]);
+  const [badges, setBadges] = useState<Badge[]>([
+    { id: '1', name: 'Primeira Análise', description: 'Realizou sua primeira análise de shape.', icon: '🏆', locked: true },
+    { id: '2', name: '7 Dias de Foco', description: '7 dias seguidos de streak.', icon: '🔥', locked: true },
+    { id: '3', name: 'Guerreiro do Mês', description: '30 dias seguidos de streak.', icon: '🎖️', locked: true },
+    { id: '4', name: 'Iniciador', description: 'Primeiro treino gerado.', icon: '💪', locked: true },
+    { id: '5', name: 'Defensor da Dieta', description: 'Reduziu 2% de BF.', icon: '🥗', locked: true },
+    { id: '6', name: 'Aesthetic', description: 'Conseguiu score acima de 70.', icon: '✨', locked: true },
+    { id: '7', name: 'Veterano', description: 'Completou 10 treinos.', icon: '⚔️', locked: true },
+  ]);
+  const [selectedMuscle, setSelectedMuscle] = useState<string | null>(null);
   const [isCompetitionMode, setIsCompetitionMode] = useState(false);
   const [isPumpMode, setIsPumpMode] = useState(false);
   const [images, setImages] = useState<{
@@ -110,6 +137,7 @@ export default function App() {
     weight: 80,
     height: 180,
     goal: "Recomposição",
+    startDate: "Maio 2024",
   });
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
@@ -188,6 +216,10 @@ export default function App() {
       lastDietGenerationDate,
       lastTrainingGenerationDate,
       completedWorkouts,
+      progressCheckIns,
+      workoutHistory,
+      analysisHistory,
+      badges
     };
     localStorage.setItem("shape_analyzer_data", JSON.stringify(data));
     alert("Dados salvos com sucesso!");
@@ -217,6 +249,10 @@ export default function App() {
           data.lastTrainingGenerationDate || lastTrainingGenerationDate,
         );
         setCompletedWorkouts(data.completedWorkouts || completedWorkouts);
+        setProgressCheckIns(data.progressCheckIns || []);
+        setWorkoutHistory(data.workoutHistory || []);
+        setAnalysisHistory(data.analysisHistory || []);
+        setBadges(data.badges || badges);
         alert("Dados carregados com sucesso!");
       } catch (e) {
         console.error("Failed to parse shape_analyzer_data:", e);
@@ -228,6 +264,44 @@ export default function App() {
   };
 
   const [result, setResult] = useState<ShapeAnalysis | null>(null);
+  const getMuscleStatus = (muscleName: string) => {
+    // Look in workoutHistory for last workout containing this muscle
+    const lastWorkout = [...workoutHistory].reverse().find(w => w.muscles.includes(muscleName));
+    if (!lastWorkout) return { color: '#374151', status: 'Sem Dados', days: '?', text: 'text-gray-500', bg: 'bg-gray-700' };
+    
+    const diffTime = Math.abs(new Date().getTime() - new Date(lastWorkout.date).getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    
+    if (diffDays <= 1) return { color: '#ff4444', status: 'Fadigado', days: diffDays, text: 'text-red-500', bg: 'bg-red-500' };
+    if (diffDays === 2) return { color: '#ffb800', status: 'Leve', days: diffDays, text: 'text-amber-500', bg: 'bg-amber-500' };
+    return { color: '#00ff88', status: 'Descansado', days: diffDays, text: 'text-[#00ff88]', bg: 'bg-[#00ff88]' };
+  };
+
+  const handleSaveProfile = async () => {
+    saveData();
+    setShowProfileSettings(false);
+  };
+
+  const handleSaveCheckIn = () => {
+    const newCheckIn: ProgressCheckIn = {
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: Date.now(),
+      date: new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }),
+      weight: checkInWeight,
+      bf: typeof checkInBf === 'number' ? checkInBf : undefined,
+      notes: checkInNotes,
+      photos: { ...checkInPhotos }
+    };
+    const updated = [newCheckIn, ...progressCheckIns];
+    setProgressCheckIns(updated);
+    localStorage.setItem("progress_checkins", JSON.stringify(updated));
+    setShowCheckInModal(false);
+    setCheckInPhotos({});
+    setCheckInNotes("");
+    setCheckInWeight(0);
+    setCheckInBf("");
+  };
+
   const [activeAccordion, setActiveAccordion] = useState<string | null>(null);
   const [analysisFilter, setAnalysisFilter] = useState<
     "Tudo" | "Gordura" | "Simetria" | "Definição" | "Plano"
@@ -580,6 +654,21 @@ export default function App() {
       completedAt: Date.now(),
       duration: elapsedTime
     };
+
+    const newWorkoutHistoryItem: WorkoutHistoryItem = {
+      id: Math.random().toString(36).substr(2, 9),
+      date: new Date().toLocaleString('pt-BR'),
+      title: activeWorkoutSession.dayName,
+      muscles: Array.from(new Set(activeWorkoutSession.exercises.map((ex: any) => ex.musculo_foco || 'Músculo'))),
+      exercisesCount: activeWorkoutSession.exercises.length,
+      duration: Math.floor(elapsedTime / 60),
+      completed: true,
+      exercises: activeWorkoutSession.exercises.map((ex: any) => ({
+        name: ex.nome,
+        sets: []
+      }))
+    };
+    setWorkoutHistory(prev => [newWorkoutHistoryItem, ...prev]);
     
     // Save to history
     const saved = localStorage.getItem("workout_history") || "[]";
@@ -1077,6 +1166,15 @@ export default function App() {
       );
       setResult(data);
       setAnalysisCount((prev) => prev + 1);
+
+      const newAnalysisHistoryItem: ShapeAnalysisHistoryItem = {
+        ...data,
+        id: Math.random().toString(36).substr(2, 9),
+        date: new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' }),
+        category: data.overallScore >= 90 ? 'Elite' : data.overallScore >= 75 ? 'Atlético' : data.overallScore >= 60 ? 'Fitness' : 'Iniciante',
+        frontPhoto: images.front
+      };
+      setAnalysisHistory(prev => [newAnalysisHistoryItem, ...prev]);
 
       // Update evolution history
       const today = new Date().toLocaleDateString("pt-BR", { month: "short" });
@@ -3801,414 +3899,514 @@ export default function App() {
   </motion.div>
 )}
 
-            {activeTab === "evolution" && (
+            {activeTab === "profile" && (
               <motion.div
-                key="evolution"
-                initial={{ opacity: 0, scale: 0.98 }}
-                animate={{ opacity: 1, scale: 1 }}
-                className="max-w-5xl mx-auto space-y-8"
+                key="profile"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="max-w-5xl mx-auto space-y-6 pb-24"
               >
-                <div className="p-5 md:p-8 rounded-3xl bg-white/[0.02] border border-white/5 space-y-8">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 md:gap-6">
-                    <div>
-                      <h2 className="text-3xl font-black italic uppercase italic">
-                        Dashboard de Evolução
-                      </h2>
-                      <p className="text-white/40 text-sm">
-                        Acompanhe seu progresso mensal e métricas de elite.
-                      </p>
-                    </div>
+                {/* Profile Header */}
+                <div className="bg-[#0d1117] border border-white/5 rounded-[32px] p-6 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-[#00ff88]/5 blur-3xl rounded-full" />
+                  
+                  <div className="flex items-start justify-between">
                     <div className="flex items-center gap-4">
-                      <button
-                        onClick={() => setActiveTab("analyze")}
-                        className="px-6 py-2.5 rounded-xl bg-emerald-500 text-black font-black uppercase text-[10px] tracking-widest hover:bg-emerald-400 transition-all shadow-lg shadow-emerald-500/20 flex items-center gap-2"
-                      >
-                        <Plus className="w-4 h-4" /> Nova Entrada
-                      </button>
-                      <div className="flex items-center gap-2 bg-white/5 p-1 rounded-xl border border-white/10 self-start">
-                        {(["1m", "6m", "all"] as const).map((f) => (
-                          <button
-                            key={f}
-                            onClick={() => setEvolutionFilter(f)}
-                            className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${evolutionFilter === f ? "bg-emerald-500 text-black shadow-lg shadow-emerald-500/20" : "text-white/40 hover:bg-white/5"}`}
-                          >
-                            {f === "1m"
-                              ? "1 Mês"
-                              : f === "6m"
-                                ? "6 Meses"
-                                : "Tudo"}
-                          </button>
-                        ))}
+                      <div className="w-16 h-16 rounded-full bg-gradient-to-br from-[#00ff88] to-[#004d2c] flex items-center justify-center border-2 border-white/10 shadow-lg group relative overflow-hidden">
+                        {profile.avatar ? (
+                          <img src={profile.avatar} className="w-full h-full object-cover" />
+                        ) : (
+                          <span className="text-2xl font-black text-black" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+                            {user?.user_metadata?.full_name?.split(' ').map((n: string) => n[0]).join('') || 'IA'}
+                          </span>
+                        )}
+                      </div>
+                      <div>
+                        <h2 className="text-lg font-black text-white uppercase tracking-tight">
+                          {user?.user_metadata?.full_name || 'Atleta Shape IA'}
+                        </h2>
+                        <p className="text-[#00ff88] text-[10px] font-bold uppercase tracking-widest">
+                          Foco: {profile.goal}
+                        </p>
+                        <p className="text-[#6b7280] text-[10px]">
+                          Membro desde {profile.startDate || 'Maio 2024'}
+                        </p>
                       </div>
                     </div>
+                    <button 
+                      onClick={() => setShowProfileSettings(true)}
+                      className="p-2.5 rounded-xl bg-white/5 border border-white/5 text-[#6b7280] hover:text-white hover:bg-white/10 transition-all"
+                    >
+                      <Settings2 className="w-5 h-5" />
+                    </button>
                   </div>
 
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+                  {/* Mini Stats Grid */}
+                  <div className="grid grid-cols-4 gap-2 mt-6">
                     {[
-                      {
-                        label: "Média Treinos/Semana",
-                        value: (completedWorkouts.length / 4).toFixed(1),
-                        icon: <Dumbbell className="w-4 h-4" />,
-                        color: "text-emerald-500",
-                      },
-                      {
-                        label: "Consistência Dieta",
-                        value: `${evolutionHistory[evolutionHistory.length - 1].consistency}%`,
-                        icon: <Utensils className="w-4 h-4" />,
-                        color: "text-blue-500",
-                      },
-                      {
-                        label: "Meta de Água Batida",
-                        value: `${Math.round((waterIntake / waterGoal) * 100)}% Hoje`,
-                        icon: <Droplets className="w-4 h-4" />,
-                        color: "text-cyan-500",
-                      },
-                      {
-                        label: "Evolução de Score",
-                        value: `+${evolutionHistory[evolutionHistory.length - 1].score - evolutionHistory[0].score}`,
-                        icon: <TrendingUp className="w-4 h-4" />,
-                        color: "text-orange-500",
-                      },
+                      { label: "Score", value: result?.overallScore || evolutionHistory[evolutionHistory.length-1].score, trend: 'up', color: 'text-[#00ff88]' },
+                      { label: "BF%", value: `${result?.bfEstimate || evolutionHistory[evolutionHistory.length-1].bf}%`, trend: 'down', color: 'text-[#ffb800]' },
+                      { label: "Streak", value: "7 Dias", trend: 'up', color: 'text-[#ff4444]' },
+                      { label: "Treinos", value: completedWorkouts?.length || 0, trend: 'up', color: 'text-blue-400' },
                     ].map((stat, i) => (
-                      <div
-                        key={i}
-                        className="p-5 rounded-2xl bg-white/[0.02] border border-white/5 space-y-2 group hover:border-white/10 transition-all"
-                      >
-                        <div
-                          className={`w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center ${stat.color} group-hover:scale-110 transition-transform`}
-                        >
-                          {stat.icon}
-                        </div>
-                        <div>
-                          <p className="text-[9px] font-black uppercase tracking-widest text-white/20">
-                            {stat.label}
-                          </p>
-                          <p className="text-xl font-black italic text-white/90">
-                            {stat.value}
-                          </p>
+                      <div key={i} className="bg-white/5 border border-white/5 rounded-2xl p-2.5 text-center">
+                        <p className="text-[8px] font-bold text-[#6b7280] uppercase tracking-widest mb-1">{stat.label}</p>
+                        <div className="flex items-center justify-center gap-1">
+                          <span className={`text-[12px] font-black ${stat.color}`}>{stat.value}</span>
+                          {stat.trend === 'up' ? <TrendingUp className="w-2.5 h-2.5 text-[#00ff88]" /> : <TrendingDown className="w-2.5 h-2.5 text-red-400" />}
                         </div>
                       </div>
                     ))}
                   </div>
+                </div>
 
-                  <div className="h-[300px] md:h-[350px] w-full bg-white/[0.01] rounded-3xl p-4 md:p-6 border border-white/5 relative overflow-hidden group">
-                    <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/5 blur-3xl rounded-full -mr-32 -mt-32 opacity-50 group-hover:opacity-100 transition-opacity" />
-                    <RechartsResponsiveContainer width="100%" height="100%">
-                      <LineChart
-                        data={
-                          evolutionFilter === "1m"
-                            ? evolutionHistory.slice(-2)
-                            : evolutionFilter === "6m"
-                              ? evolutionHistory.slice(-6)
-                              : evolutionHistory
-                        }
-                      >
-                        <CartesianGrid
-                          strokeDasharray="3 3"
-                          stroke="#ffffff05"
-                          vertical={false}
-                        />
-                        <XAxis
-                          dataKey="date"
-                          stroke="#ffffff20"
-                          fontSize={10}
-                          tickLine={false}
-                          axisLine={false}
-                          dy={10}
-                        />
-                        <YAxis
-                          stroke="#ffffff20"
-                          fontSize={10}
-                          tickLine={false}
-                          axisLine={false}
-                          dx={-10}
-                        />
-                        <Tooltip
-                          contentStyle={{
-                            backgroundColor: "#0A0A0B",
-                            border: "1px solid rgba(255,255,255,0.1)",
-                            borderRadius: "16px",
-                            boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
-                            padding: "12px",
-                          }}
-                          itemStyle={{
-                            fontSize: "11px",
-                            fontWeight: "bold",
-                            textTransform: "uppercase",
-                          }}
-                          labelStyle={{
-                            fontSize: "10px",
-                            color: "rgba(255,255,255,0.4)",
-                            marginBottom: "8px",
-                            fontWeight: "black",
-                            textTransform: "uppercase",
-                          }}
-                        />
-                        <Legend
-                          verticalAlign="top"
-                          align="right"
-                          iconType="circle"
-                          wrapperStyle={{
-                            fontSize: "10px",
-                            fontWeight: "black",
-                            textTransform: "uppercase",
-                            paddingBottom: "20px",
-                            opacity: 0.6,
-                          }}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="score"
-                          stroke="#10b981"
-                          strokeWidth={4}
-                          dot={{ r: 4, fill: "#10b981", strokeWidth: 0 }}
-                          activeDot={{ r: 6, strokeWidth: 0 }}
-                          name="Score Geral"
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="bf"
-                          stroke="#f97316"
-                          strokeWidth={2}
-                          dot={{ r: 3, fill: "#f97316", strokeWidth: 0 }}
-                          name="BF %"
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="consistency"
-                          stroke="#3b82f6"
-                          strokeWidth={2}
-                          dot={{ r: 3, fill: "#3b82f6", strokeWidth: 0 }}
-                          name="Consistência %"
-                        />
-                      </LineChart>
-                    </RechartsResponsiveContainer>
-                  </div>
+                {/* Vertical Tabs */}
+                <div className="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar px-1">
+                  {(["resumo", "historico", "fotos", "musculos"] as const).map((tab) => (
+                    <button
+                      key={tab}
+                      onClick={() => setProfileTab(tab)}
+                      className={`px-6 py-2.5 rounded-full text-[10px] font-black uppercase tracking-widest whitespace-nowrap transition-all ${
+                        profileTab === tab 
+                          ? "bg-[#00ff88] text-black shadow-[0_5px_15px_rgba(0,255,136,0.2)]" 
+                          : "bg-white/5 text-[#6b7280] border border-white/5 hover:bg-white/10"
+                      }`}
+                    >
+                      {tab}
+                    </button>
+                  ))}
+                </div>
 
-                  <div className="space-y-6">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                      <h3 className="text-lg font-black italic uppercase flex items-center gap-2">
-                        <Camera className="w-5 h-5 text-emerald-500" /> Galeria
-                        de Evolução Mensal
-                      </h3>
-                      <div className="flex items-center gap-2 md:gap-3">
-                        <button
-                          onClick={() => setShowGhostOverlay(!showGhostOverlay)}
-                          className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${showGhostOverlay ? "bg-orange-500 text-black" : "bg-white/5 text-white/40 border border-white/10"}`}
-                        >
-                          Ghost Overlay {showGhostOverlay ? "ON" : "OFF"}
-                        </button>
-                        <button className="text-[10px] font-black uppercase text-white/40 hover:text-emerald-500 transition-all border-b border-white/10">
-                          Ver Todas as Fotos
-                        </button>
-                      </div>
-                    </div>
-
-                    {showGhostOverlay && evolutionHistory.length >= 2 && (
-                      <div className="space-y-4">
-                        <div className="relative aspect-[3/4] max-w-sm mx-auto rounded-3xl overflow-hidden border-2 border-emerald-500 shadow-[0_0_30px_rgba(16,185,129,0.2)] group">
-                          {/* Current Photo (After) */}
-                          <img
-                            src={
-                              evolutionHistory[evolutionHistory.length - 1]
-                                .photo
-                            }
-                            className="absolute inset-0 w-full h-full object-cover"
-                            alt="Current"
-                          />
-                          {/* Selected Photo (Before) */}
-                          <img
-                            src={evolutionHistory[comparisonIndex].photo}
-                            className="absolute inset-0 w-full h-full object-cover"
-                            style={{
-                              clipPath: `inset(0 ${100 - ghostSlider}% 0 0)`,
-                            }}
-                            alt="Previous"
-                          />
-                          {/* Slider Line */}
-                          <div
-                            className="absolute top-0 bottom-0 w-1 bg-emerald-500 z-20"
-                            style={{ left: `${ghostSlider}%` }}
-                          >
-                            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-emerald-500 rounded-full flex items-center justify-center shadow-lg">
-                              <Zap className="w-4 h-4 text-black fill-current" />
-                            </div>
-                          </div>
-                          {/* Invisible Range Input */}
-                          <input
-                            type="range"
-                            min="0"
-                            max="100"
-                            value={ghostSlider}
-                            onChange={(e) =>
-                              setGhostSlider(Number(e.target.value))
-                            }
-                            className="absolute inset-0 w-full h-full opacity-0 cursor-ew-resize z-30"
-                          />
-                          <div className="absolute bottom-4 left-4 right-4 p-3 bg-black/60 backdrop-blur-md rounded-xl border border-white/10 z-20 pointer-events-none">
-                            <p className="text-[10px] font-black uppercase text-emerald-500 text-center">
-                              Comparação:{" "}
-                              {evolutionHistory[comparisonIndex].date} vs Atual
-                            </p>
+                {/* Tab Content */}
+                <div className="min-h-[400px]">
+                  {profileTab === "resumo" && (
+                    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                      {/* Evolution Chart */}
+                      <div className="bg-[#0d1117] border border-white/5 rounded-[32px] p-6 space-y-4">
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-xs font-black uppercase tracking-widest text-white/40">Evolução de Score</h3>
+                          <div className="flex bg-white/5 rounded-lg p-1 border border-white/5">
+                            {["1 Mês", "3 Meses", "6 Meses", "Tudo"].map((f) => (
+                              <button key={f} className="px-3 py-1 text-[8px] font-bold text-[#6b7280] uppercase hover:text-white transition-all">{f}</button>
+                            ))}
                           </div>
                         </div>
-                        <p className="text-center text-[10px] text-white/40 uppercase font-black">
-                          Selecione uma foto abaixo para comparar
-                        </p>
-                      </div>
-                    )}
-                    <div className="grid grid-cols-2 md:grid-cols-6 gap-3 md:gap-4">
-                      {evolutionHistory
-                        .filter((e) => e.photo)
-                        .map((entry, i) => {
-                          const originalIndex = evolutionHistory.findIndex(
-                            (e) => e.date === entry.date,
-                          );
-                          return (
-                            <motion.div
-                              key={i}
-                              whileHover={{ scale: 1.05, y: -5 }}
-                              onClick={() => {
-                                if (showGhostOverlay) {
-                                  setComparisonIndex(originalIndex);
-                                }
-                              }}
-                              className={`aspect-[3/4] rounded-2xl overflow-hidden border relative group cursor-pointer shadow-xl transition-all ${showGhostOverlay && comparisonIndex === originalIndex ? "border-emerald-500 ring-2 ring-emerald-500/50" : "border-white/10"}`}
-                            >
-                              <img
-                                src={entry.photo}
-                                loading="lazy"
-                                alt={entry.date}
-                                className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-500"
+                        <div className="h-[240px] w-full">
+                          <RechartsResponsiveContainer width="100%" height="100%">
+                            <AreaChart data={evolutionHistory}>
+                              <defs>
+                                <linearGradient id="colorScore" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor="#00ff88" stopOpacity={0.3}/>
+                                  <stop offset="95%" stopColor="#00ff88" stopOpacity={0}/>
+                                </linearGradient>
+                              </defs>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
+                              <XAxis dataKey="date" stroke="#ffffff20" fontSize={10} axisLine={false} tickLine={false} />
+                              <YAxis stroke="#ffffff20" fontSize={10} axisLine={false} tickLine={false} domain={[0, 100]} />
+                              <Tooltip 
+                                contentStyle={{ backgroundColor: '#0d1117', border: '1px solid #ffffff10', borderRadius: '12px' }}
+                                itemStyle={{ fontSize: '10px', color: '#00ff88' }}
                               />
-                              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-end pb-3">
-                                <span className="text-[10px] font-black uppercase text-white tracking-widest">
-                                  {entry.date}
-                                </span>
-                                <span className="text-[8px] font-bold text-emerald-500 uppercase">
-                                  {entry.weight}kg
-                                </span>
-                              </div>
-                              <div className="absolute top-2 right-2 w-6 h-6 rounded-lg bg-black/60 backdrop-blur-md border border-white/10 flex items-center justify-center">
-                                <span className="text-[8px] font-black text-white/60">
-                                  {i + 1}
-                                </span>
-                              </div>
-                            </motion.div>
-                          );
-                        })}
-                      {/* Placeholder for missing months */}
-                      {Array.from({
-                        length: Math.max(
-                          0,
-                          6 - evolutionHistory.filter((e) => e.photo).length,
-                        ),
-                      }).map((_, i) => (
-                        <div
-                          key={`empty-${i}`}
-                          className="aspect-[3/4] rounded-2xl border-2 border-dashed border-white/5 flex flex-col items-center justify-center gap-2 bg-white/[0.01] group hover:border-emerald-500/20 transition-all"
-                        >
-                          <Camera className="w-6 h-6 text-white/5 group-hover:text-emerald-500/20 transition-colors" />
-                          <span className="text-[8px] font-black text-white/5 uppercase tracking-widest">
-                            Mês{" "}
-                            {evolutionHistory.filter((e) => e.photo).length +
-                              i +
-                              1}
-                          </span>
+                              <Area type="monotone" dataKey="score" stroke="#00ff88" strokeWidth={3} fillOpacity={1} fill="url(#colorScore)" />
+                            </AreaChart>
+                          </RechartsResponsiveContainer>
                         </div>
-                      ))}
-                    </div>
-                  </div>
+                      </div>
 
-                  <div className="space-y-4">
-                    <h3 className="text-xs font-black uppercase tracking-widest text-white/40">
-                      Histórico de Análises Detalhado
-                    </h3>
-                    <div className="grid gap-3">
-                      {evolutionHistory
-                        .slice()
-                        .reverse()
-                        .map((entry, i) => (
-                          <div
-                            key={i}
-                            className="flex items-center justify-between p-5 bg-white/[0.02] rounded-2xl border border-white/5 hover:border-white/10 transition-all group"
-                          >
-                            <div className="flex flex-col sm:flex-row sm:items-center gap-3 md:gap-5">
-                              <div className="w-12 h-12 md:w-14 md:h-14 rounded-2xl bg-emerald-500/10 flex flex-col items-center justify-center border border-emerald-500/20 group-hover:bg-emerald-500/20 transition-all">
-                                <span className="text-[10px] md:text-xs font-black text-emerald-500">
-                                  {entry.date}
-                                </span>
-                                <span className="text-[7px] md:text-[8px] font-bold text-emerald-500/60 uppercase">
-                                  2026
-                                </span>
-                              </div>
+                      {/* Metrics Evolution */}
+                      <div className="space-y-3">
+                        <h3 className="text-[10px] font-black uppercase tracking-widest text-white/40 ml-1">Evolução de Métricas</h3>
+                        <div className="grid grid-cols-1 gap-3">
+                          {[
+                            { name: "Peso Corporal", value: `${profile.weight}kg`, change: "-3.2kg", trend: 'up', color: 'text-[#00ff88]' },
+                            { name: "BF% Estimado", value: `${result?.bfEstimate || 18}%`, change: "-2.1%", trend: 'down', color: 'text-[#ffb800]' },
+                            { name: "Symmetry Score", value: "82/100", change: "+5", trend: 'up', color: 'text-blue-400' },
+                          ].map((metric, i) => (
+                            <div key={i} className="bg-[#0d1117] border border-white/5 rounded-2xl p-4 flex items-center justify-between">
                               <div>
-                                <p className="font-black italic uppercase text-xs md:text-sm tracking-tight">
-                                  Check-in de Performance
-                                </p>
-                                <div className="flex flex-wrap gap-2 md:gap-3 mt-1">
-                                  <span className="text-[9px] md:text-[10px] text-white/40 uppercase font-black">
-                                    {entry.weight}kg
-                                  </span>
-                                  <span className="text-[9px] md:text-[10px] text-white/20 hidden md:inline">
-                                    |
-                                  </span>
-                                  <span className="text-[9px] md:text-[10px] text-orange-500 uppercase font-black">
-                                    {entry.bf}% BF
-                                  </span>
-                                  <span className="text-[9px] md:text-[10px] text-white/20 hidden md:inline">
-                                    |
-                                  </span>
-                                  <span className="text-[9px] md:text-[10px] text-blue-500 uppercase font-black">
-                                    {entry.consistency}% Consistência
-                                  </span>
+                                <p className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest">{metric.name}</p>
+                                <p className="text-lg font-black text-white">{metric.value}</p>
+                              </div>
+                              <div className="text-right">
+                                <span className={`text-[10px] font-bold ${metric.trend === 'down' ? 'text-[#00ff88]' : 'text-[#ffb800]'} px-2 py-1 bg-white/5 rounded-lg`}>
+                                  {metric.change}
+                                </span>
+                                <div className="h-6 w-24 mt-2">
+                                  {/* Sparkline simulation */}
+                                  <div className="flex items-end gap-0.5 h-full">
+                                    {[30, 45, 35, 60, 50, 75, 65].map((h, j) => (
+                                      <div key={j} className="flex-1 bg-[#00ff88]/20 rounded-full" style={{ height: `${h}%` }} />
+                                    ))}
+                                  </div>
                                 </div>
                               </div>
                             </div>
-                            <div className="text-right">
-                              <div className="flex items-center gap-2 justify-end">
-                                <TrendingUp className="w-3 h-3 text-emerald-500" />
-                                <p className="text-2xl font-black italic text-emerald-500 leading-none">
-                                  {entry.score}
-                                </p>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Badges */}
+                      <div className="space-y-3">
+                        <h3 className="text-[10px] font-black uppercase tracking-widest text-white/40 ml-1">Conquistas</h3>
+                        <div className="grid grid-cols-4 gap-3">
+                          {badges.map((badge) => (
+                            <div 
+                              key={badge.id}
+                              className={`aspect-square rounded-2xl border flex flex-col items-center justify-center p-2 text-center transition-all ${
+                                !badge.locked ? "bg-[#00ff88]/10 border-[#00ff88]/20" : "bg-white/5 border-white/5 grayscale opacity-30"
+                              }`}
+                            >
+                              <span className="text-2xl mb-1">{badge.icon}</span>
+                              <p className="text-[7px] font-black uppercase leading-tight">{badge.name}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {profileTab === "historico" && (
+                    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                      <div className="flex bg-white/5 rounded-2xl p-1 border border-white/5">
+                        <button 
+                          onClick={() => setHistorySubTab("treinos")}
+                          className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${historySubTab === "treinos" ? "bg-white/10 text-white" : "text-[#6b7280]"}`}
+                        >
+                          Treinos
+                        </button>
+                        <button 
+                          onClick={() => setHistorySubTab("analises")}
+                          className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${historySubTab === "analises" ? "bg-white/10 text-white" : "text-[#6b7280]"}`}
+                        >
+                          Análises
+                        </button>
+                      </div>
+
+                      <div className="space-y-3">
+                        {historySubTab === "treinos" ? (
+                          (workoutHistory.length > 0 ? workoutHistory : [
+                            { id: '1', date: '2026-05-10 18:30', title: 'Treino A - Peito e Tríceps', muscles: ['Peito', 'Tríceps'], exercisesCount: 6, duration: 55, completed: true }
+                          ]).map((item: any) => (
+                            <div key={item.id} className="bg-[#0d1117] border border-white/5 rounded-2xl p-4 space-y-4 group">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <span className="text-[9px] font-bold text-[#6b7280]">{item.date}</span>
+                                    <span className="px-1.5 py-0.5 bg-[#00ff88]/10 text-[#00ff88] text-[8px] font-black uppercase rounded tracking-wider">Completo</span>
+                                  </div>
+                                  <h4 className="text-sm font-black text-white uppercase">{item.title}</h4>
+                                </div>
+                                <div className="text-right">
+                                  <p className="text-xs font-black text-white">{item.exercisesCount} Exercícios</p>
+                                  <p className="text-[10px] text-[#6b7280]">{item.duration} min</p>
+                                </div>
                               </div>
-                              <p className="text-[8px] font-black uppercase text-white/20 mt-1">
-                                Score de Elite
-                              </p>
+                              <div className="flex flex-wrap gap-1.5 pt-2 border-t border-white/5">
+                                {item.muscles?.map((m: string) => (
+                                  <span key={m} className="px-2 py-1 bg-white/5 rounded-lg text-[8px] font-black text-[#6b7280] uppercase">{m}</span>
+                                ))}
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          (analysisHistory.length > 0 ? analysisHistory : [
+                            { id: '1', date: '11 Maio 2026', overallScore: 68, bfEstimate: 17, category: 'Fitness', frontPhoto: 'https://images.unsplash.com/photo-1594882645126-14020914d58d?w=400&q=80' }
+                          ]).map((item: any) => (
+                            <div key={item.id} className="bg-[#0d1117] border border-white/5 rounded-2xl p-4 flex items-center gap-4 group">
+                               <div className="w-16 h-20 rounded-xl overflow-hidden border border-white/10 shrink-0">
+                                 <img src={item.frontPhoto} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all" />
+                               </div>
+                               <div className="flex-1">
+                                 <p className="text-[9px] font-bold text-[#6b7280] uppercase mb-0.5">{item.date}</p>
+                                 <h4 className="text-sm font-black text-white uppercase mb-1">Score: {item.overallScore}</h4>
+                                 <div className="flex items-center gap-2">
+                                  <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${
+                                    item.category === 'Elite' ? 'bg-[#ff4444]/10 text-[#ff4444]' :
+                                    item.category === 'Atlético' ? 'bg-[#ffb800]/10 text-[#ffb800]' :
+                                    'bg-[#00ff88]/10 text-[#00ff88]'
+                                  }`}>
+                                    {item.category}
+                                  </span>
+                                  <span className="text-[10px] font-bold text-[#6b7280]">{item.bfEstimate}% BF</span>
+                                 </div>
+                               </div>
+                               <ChevronRight className="w-5 h-5 text-[#6b7280] group-hover:text-white transition-all" />
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {profileTab === "fotos" && (
+                    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-xs font-black uppercase tracking-widest text-white/40">Check-in de Progresso</h3>
+                        <button 
+                          onClick={() => setShowCheckInModal(true)}
+                          className="px-4 py-2 bg-[#00ff88] text-black text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg shadow-[#00ff88]/20"
+                        >
+                          + Nova Entrada
+                        </button>
+                      </div>
+
+                      {/* Comparison Tool */}
+                      {progressCheckIns.length >= 2 && (
+                        <div className="bg-[#0d1117] border border-white/5 rounded-[32px] p-6 space-y-4">
+                           <div className="flex items-center justify-between mb-2">
+                             <h4 className="text-[10px] font-black uppercase text-[#00ff88]">Modo Comparação (Ghost)</h4>
+                             <button 
+                              onClick={() => setShowGhostOverlay(!showGhostOverlay)}
+                              className={`px-3 py-1 rounded-lg text-[8px] font-black uppercase border transition-all ${showGhostOverlay ? 'bg-[#ffb800] text-black border-[#ffb800]' : 'text-[#6b7280] border-white/10'}`}
+                             >
+                              {showGhostOverlay ? 'Desativar' : 'Ativar'}
+                             </button>
+                           </div>
+
+                           {showGhostOverlay && (
+                             <div className="relative aspect-[3/4] rounded-2xl overflow-hidden border border-white/10 max-w-sm mx-auto group">
+                                <img 
+                                  src={progressCheckIns[0].photos.front} 
+                                  className="absolute inset-0 w-full h-full object-cover" 
+                                />
+                                <img 
+                                  src={progressCheckIns[progressCheckIns.length-1].photos.front} 
+                                  className="absolute inset-0 w-full h-full object-cover" 
+                                  style={{ opacity: ghostSlider / 100 }}
+                                />
+                                <div className="absolute bottom-4 left-4 right-4 z-10">
+                                   <input 
+                                    type="range" min="0" max="100" value={ghostSlider}
+                                    onChange={(e) => setGhostSlider(Number(e.target.value))}
+                                    className="w-full accent-[#00ff88]"
+                                   />
+                                   <div className="flex justify-between mt-2">
+                                      <span className="text-[8px] font-black text-white/40 uppercase">Antiga</span>
+                                      <span className="text-[8px] font-black text-[#00ff88] uppercase">Recente</span>
+                                   </div>
+                                </div>
+                             </div>
+                           )}
+                        </div>
+                      )}
+
+                      {/* Gallery */}
+                      <div className="grid grid-cols-2 gap-4">
+                        {(progressCheckIns.length > 0 ? progressCheckIns : [
+                          { id: '1', date: 'Maio 2026', weight: 82.5, photos: { front: 'https://images.unsplash.com/photo-1594882645126-14020914d58d?w=400&q=80' } },
+                          { id: '2', date: 'Abril 2026', weight: 84.2, photos: { front: 'https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b?w=400&q=80' } }
+                        ]).map((checkin: any) => (
+                          <div key={checkin.id} className="relative group aspect-[3/4] rounded-3xl overflow-hidden border border-white/5 bg-white/5">
+                            <img src={checkin.photos.front} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-700" />
+                            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-4 flex flex-col justify-end">
+                              <p className="text-[10px] font-bold text-[#00ff88] uppercase">{checkin.date}</p>
+                              <p className="text-lg font-black text-white leading-tight">{checkin.weight}kg</p>
+                            </div>
+                            <div className="absolute top-3 right-3 px-2 py-1 bg-black/40 backdrop-blur-md rounded-lg text-[8px] font-black text-white/60">
+                              {checkin.date}
                             </div>
                           </div>
                         ))}
-                    </div>
-                    {/* Premium Card Integration */}
-                    {!isPremium && (
-                      <div className="p-6 rounded-3xl bg-gradient-to-br from-emerald-500/10 to-emerald-500/5 border border-emerald-500/20 flex flex-col md:flex-row items-center justify-between gap-4 mt-8">
-                        <div className="flex items-center gap-4">
-                          <div className="w-12 h-12 rounded-2xl bg-emerald-500 flex items-center justify-center shadow-lg shadow-emerald-500/20">
-                            <Crown className="w-6 h-6 text-black" />
-                          </div>
-                          <div>
-                            <h4 className="text-sm font-black uppercase tracking-widest text-emerald-500">
-                              Upgrade Padrão Ouro
-                            </h4>
-                            <p className="text-xs text-white/60">
-                              Quer levar seu shape ao próximo nível? Conheça o
-                              Plano Padrão Ouro.
-                            </p>
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => setShowPremiumModal(true)}
-                          className="px-6 py-3 bg-emerald-500 text-black font-black uppercase text-[10px] tracking-widest rounded-xl hover:bg-emerald-400 transition-all"
-                        >
-                          Saiba Mais
-                        </button>
                       </div>
-                    )}
-                  </div>
+
+                      {/* Vertical Timeline */}
+                      <div className="relative pl-8 space-y-6 before:absolute before:left-3 before:top-2 before:bottom-2 before:w-[2px] before:bg-white/5">
+                        {[
+                          { date: 'Maio 2026', weight: 82.5, diff: '-1.7kg', score: 68 },
+                          { date: 'Abril 2026', weight: 84.2, diff: '-2.1kg', score: 65 },
+                          { date: 'Março 2026', weight: 86.3, diff: '--', score: 62 },
+                        ].map((m, i) => (
+                          <div key={i} className="relative">
+                            <div className="absolute -left-8 top-1.5 w-6 h-6 rounded-full bg-[#0d1117] border-2 border-[#00ff88] z-10" />
+                            <div className="bg-[#0d1117] border border-white/5 rounded-2xl p-4 flex items-center justify-between">
+                              <div>
+                                <p className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest">{m.date}</p>
+                                <p className="text-sm font-black text-white">{m.weight}kg</p>
+                              </div>
+                              <div className="text-right">
+                                <p className="text-[10px] font-black text-[#00ff88]">{m.diff}</p>
+                                <p className="text-[9px] text-[#6b7280] uppercase font-bold">Score: {m.score}</p>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {profileTab === "musculos" && (
+                    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                      <div className="text-center space-y-1">
+                        <h3 className="text-sm font-black text-white uppercase italic">Bio-Mapeamento de Fadiga</h3>
+                        <p className="text-[10px] text-[#6b7280]">Toque em um grupo muscular para ver detalhes.</p>
+                      </div>
+
+                      {/* Muscle SVG Map */}
+                      <div className="bg-[#0d1117] border border-white/5 rounded-[40px] p-8 flex justify-center gap-8 relative overflow-hidden">
+                         <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-[#00ff88]/5 via-transparent to-transparent"></div>
+                         
+                         {/* Simple Body Outline Simulation */}
+                         <div className="relative w-48 h-80 flex gap-4">
+                            {/* Front View */}
+                            <div className="flex-1 relative">
+                               <div className="relative w-full h-full opacity-80 scale-110">
+                                  <svg viewBox="0 0 100 200" className="w-full h-full drop-shadow-[0_0_15px_rgba(0,0,0,0.5)]">
+                                     {/* Simple stylized paths for muscles */}
+                                     <path d="M40 10 Q50 5 60 10 L50 20 Z" fill="#374151" /> {/* Head */}
+                                     {/* Shoulders */}
+                                     <circle cx="30" cy="35" r="8" fill={getMuscleStatus('Ombros').color} onClick={() => setSelectedMuscle('Ombros')} className="cursor-pointer" />
+                                     <circle cx="70" cy="35" r="8" fill={getMuscleStatus('Ombros').color} onClick={() => setSelectedMuscle('Ombros')} className="cursor-pointer" />
+                                     {/* Peito */}
+                                     <rect x="35" y="32" width="15" height="15" rx="2" fill={getMuscleStatus('Peito').color} onClick={() => setSelectedMuscle('Peito')} className="cursor-pointer" />
+                                     <rect x="50" y="32" width="15" height="15" rx="2" fill={getMuscleStatus('Peito').color} onClick={() => setSelectedMuscle('Peito')} className="cursor-pointer" />
+                                     {/* Braços */}
+                                     <path d="M22 35 L18 70" stroke={getMuscleStatus('Bíceps').color} strokeWidth="6" strokeLinecap="round" onClick={() => setSelectedMuscle('Bíceps')} className="cursor-pointer" />
+                                     <path d="M78 35 L82 70" stroke={getMuscleStatus('Bíceps').color} strokeWidth="6" strokeLinecap="round" onClick={() => setSelectedMuscle('Bíceps')} className="cursor-pointer" />
+                                     {/* Abdômen */}
+                                     <rect x="40" y="50" width="20" height="25" rx="2" fill={getMuscleStatus('Abdômen').color} onClick={() => setSelectedMuscle('Abdômen')} className="cursor-pointer" />
+                                     {/* Pernas */}
+                                     <path d="M38 75 L35 140" stroke={getMuscleStatus('Quadríceps').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Quadríceps')} className="cursor-pointer" />
+                                     <path d="M62 75 L65 140" stroke={getMuscleStatus('Quadríceps').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Quadríceps')} className="cursor-pointer" />
+                                  </svg>
+                                  <p className="text-[7px] font-black text-white/20 uppercase text-center mt-2">FRENTE</p>
+                               </div>
+                            </div>
+                            {/* Back View */}
+                            <div className="flex-1 relative">
+                               <div className="relative w-full h-full opacity-80 scale-110">
+                                  <svg viewBox="0 0 100 200" className="w-full h-full drop-shadow-[0_0_15px_rgba(0,0,0,0.5)]">
+                                     <path d="M40 10 Q50 5 60 10 L50 20 Z" fill="#374151" />
+                                     {/* Costas */}
+                                     <path d="M30 32 L70 32 L65 60 L35 60 Z" fill={getMuscleStatus('Costas Superior').color} onClick={() => setSelectedMuscle('Costas Superior')} className="cursor-pointer" />
+                                     <rect x="42" y="62" width="16" height="10" fill={getMuscleStatus('Costas Inferior').color} onClick={() => setSelectedMuscle('Costas Inferior')} className="cursor-pointer" />
+                                     {/* Tríceps */}
+                                     <path d="M22 35 L18 70" stroke={getMuscleStatus('Tríceps').color} strokeWidth="6" strokeLinecap="round" onClick={() => setSelectedMuscle('Tríceps')} className="cursor-pointer" />
+                                     <path d="M78 35 L82 70" stroke={getMuscleStatus('Tríceps').color} strokeWidth="6" strokeLinecap="round" onClick={() => setSelectedMuscle('Tríceps')} className="cursor-pointer" />
+                                     {/* Glúteos */}
+                                     <circle cx="42" cy="80" r="7" fill={getMuscleStatus('Glúteos').color} onClick={() => setSelectedMuscle('Glúteos')} className="cursor-pointer" />
+                                     <circle cx="58" cy="80" r="7" fill={getMuscleStatus('Glúteos').color} onClick={() => setSelectedMuscle('Glúteos')} className="cursor-pointer" />
+                                     {/* Pernas Tras */}
+                                     <path d="M38 85 L35 140" stroke={getMuscleStatus('Posteriores').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Posteriores')} className="cursor-pointer" />
+                                     <path d="M62 85 L65 140" stroke={getMuscleStatus('Posteriores').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Posteriores')} className="cursor-pointer" />
+                                  </svg>
+                                  <p className="text-[7px] font-black text-white/20 uppercase text-center mt-2">COSTAS</p>
+                               </div>
+                            </div>
+                         </div>
+                      </div>
+
+                      {/* Fatigue Legend */}
+                      <div className="flex items-center justify-center gap-4">
+                         {[
+                          { label: 'Descansado', color: 'bg-[#00ff88]' },
+                          { label: 'Leve', color: 'bg-[#ffb800]' },
+                          { label: 'Fadigado', color: 'bg-[#ff4444]' },
+                          { label: 'Sem Dados', color: 'bg-[#374151]' },
+                         ].map(l => (
+                           <div key={l.label} className="flex items-center gap-1.5">
+                              <div className={`w-2 h-2 rounded-full ${l.color}`}></div>
+                              <span className="text-[8px] font-bold text-[#6b7280] uppercase tracking-widest">{l.label}</span>
+                           </div>
+                         ))}
+                      </div>
+
+                      {/* Muscle Details Panel */}
+                      <AnimatePresence>
+                        {selectedMuscle && (
+                          <motion.div 
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: 'auto', opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            className="bg-[#00ff88]/5 border border-[#00ff88]/20 rounded-3xl p-6 relative overflow-hidden"
+                          >
+                             <button 
+                              onClick={() => setSelectedMuscle(null)}
+                              className="absolute top-4 right-4 p-1 hover:bg-white/5 rounded-full"
+                             >
+                              <X className="w-4 h-4 text-[#6b7280]" />
+                             </button>
+                             <div className="flex items-start gap-4">
+                                <div className={`p-3 rounded-2xl ${getMuscleStatus(selectedMuscle).bg}`}>
+                                   <Activity className="w-6 h-6 text-black" />
+                                </div>
+                                <div className="space-y-1">
+                                   <p className="text-[10px] font-bold text-[#6b7280] uppercase tracking-[0.2em]">Detalhes de Grupo</p>
+                                   <h4 className="text-xl font-black text-white uppercase italic">{selectedMuscle}</h4>
+                                   <div className="flex items-center gap-1.5">
+                                      <span className={`text-[10px] font-black uppercase ${getMuscleStatus(selectedMuscle).text}`}>Status: {getMuscleStatus(selectedMuscle).status}</span>
+                                   </div>
+                                </div>
+                             </div>
+                             
+                             <div className="grid grid-cols-2 gap-4 mt-6">
+                                <div className="space-y-1">
+                                   <p className="text-[9px] font-bold text-[#6b7280] uppercase">Último Treino</p>
+                                   <p className="text-sm font-black text-white">Há {getMuscleStatus(selectedMuscle).days} dias</p>
+                                </div>
+                                <div className="space-y-1">
+                                   <p className="text-[9px] font-bold text-[#6b7280] uppercase">Próximo Treino</p>
+                                   <p className="text-sm font-black text-[#00ff88]">
+                                      {getMuscleStatus(selectedMuscle).days >= 3 ? 'Pronto Agora' : `Daqui ${3 - (Number(getMuscleStatus(selectedMuscle).days) || 0)} dias`}
+                                   </p>
+                                </div>
+                             </div>
+                             
+                             <div className="mt-4 pt-4 border-t border-white/5">
+                                <p className="text-[10px] font-black text-[#00ff88] uppercase mb-1">Dica de Recuperação</p>
+                                <p className="text-xs text-white/60">
+                                   Priorize proteína (2g/kg) e sono de qualidade (7-9h) para maximizar a hipertrofia e reparação das fibras musculares.
+                                </p>
+                             </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+
+                      {/* Best Workout Recommendation */}
+                      <div className="bg-[#00ff88]/5 border border-[#00ff88]/20 rounded-[32px] p-6 relative group overflow-hidden">
+                         <div className="flex items-center justify-between relative z-10">
+                            <div className="space-y-1">
+                               <p className="text-[10px] font-black text-[#00ff88] uppercase tracking-widest">Recomendação do Dia</p>
+                               <h4 className="text-lg font-black text-white uppercase italic">Full Body / Foco Core</h4>
+                               <p className="text-[10px] text-[#6b7280]">Músculos descansados: Ombros, Glúteos e Abdômen.</p>
+                            </div>
+                            <button 
+                              onClick={() => setActiveTab('training')}
+                              className="px-4 py-3 bg-[#00ff88] text-black rounded-2xl transition-all hover:scale-105 active:scale-95"
+                            >
+                              <Play className="w-5 h-5 fill-current" />
+                            </button>
+                         </div>
+                         <div className="absolute top-0 right-0 w-32 h-64 bg-[#00ff88]/5 -rotate-45 translate-x-12 translate-y-[-20%] pointer-events-none"></div>
+                      </div>
+
+                      {/* List of Muscle Groups */}
+                      <div className="grid gap-3">
+                         {['Peito', 'Costas Superior', 'Ombros', 'Bíceps', 'Tríceps', 'Abdômen', 'Quadríceps', 'Posteriores', 'Glúteos'].map(muscle => {
+                            const status = getMuscleStatus(muscle);
+                            return (
+                              <div key={muscle} className="bg-[#0d1117] border border-white/5 rounded-2xl p-4 flex items-center justify-between group hover:border-white/10 transition-all">
+                                 <div className="flex items-center gap-3">
+                                    <div className={`w-2 h-8 rounded-full ${status.bg}`} />
+                                    <div>
+                                       <p className="text-xs font-black text-white uppercase">{muscle}</p>
+                                       <p className="text-[10px] text-[#6b7280]">Há {status.days} dias atrás</p>
+                                    </div>
+                                 </div>
+                                 <div className="text-right">
+                                    <p className={`text-[10px] font-black uppercase tracking-widest ${status.text}`}>{status.status}</p>
+                                    <div className="w-20 h-1 bg-white/5 rounded-full mt-1.5 overflow-hidden">
+                                       <div className={`h-full ${status.bg}`} style={{ width: `${Math.max(0, 100 - (status.days * 20))}%` }}></div>
+                                    </div>
+                                 </div>
+                              </div>
+                            )
+                         })}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </motion.div>
             )}
-
             {activeTab === "coach" && (
               <motion.div
                 key="coach"
@@ -4609,7 +4807,7 @@ export default function App() {
               { id: "analyze", icon: <Camera />, label: "Análise" },
               { id: "diet", icon: <Utensils />, label: "Dieta" },
               { id: "training", icon: <Dumbbell />, label: "Treino" },
-              { id: "evolution", icon: <TrendingUp />, label: "Evolução" },
+              { id: "profile", icon: <User />, label: "Perfil" },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -4622,6 +4820,212 @@ export default function App() {
             ))}
           </div>
         </nav>
+
+        {/* Profile Settings Modal */}
+        <AnimatePresence>
+          {showProfileSettings && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+              <motion.div 
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                onClick={() => setShowProfileSettings(false)}
+                className="absolute inset-0 bg-black/80 backdrop-blur-md"
+              />
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                className="relative w-full max-w-lg bg-[#0d1117] border border-white/10 rounded-[32px] overflow-hidden"
+              >
+                <div className="p-6 border-b border-white/5 flex items-center justify-between">
+                  <h3 className="text-sm font-black text-white uppercase tracking-widest">Configurações do Perfil</h3>
+                  <button onClick={() => setShowProfileSettings(false)} className="p-2 hover:bg-white/5 rounded-full"><X className="w-5 h-5 text-[#6b7280]" /></button>
+                </div>
+                <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto no-scrollbar">
+                  {/* Form fields */}
+                  <div className="space-y-4">
+                     <div className="flex justify-center mb-6">
+                        <div className="relative group">
+                           <div className="w-24 h-24 rounded-full bg-gradient-to-br from-[#00ff88] to-[#004d2c] flex items-center justify-center border-2 border-white/10 overflow-hidden">
+                              {profile.avatar ? <img src={profile.avatar} className="w-full h-full object-cover" /> : <User className="w-10 h-10 text-black" />}
+                           </div>
+                           <button className="absolute bottom-0 right-0 p-2 bg-[#00ff88] rounded-full text-black shadow-lg"><Camera className="w-4 h-4" /></button>
+                        </div>
+                     </div>
+                     <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1.5">
+                           <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest ml-1">Nome Completo</label>
+                           <input 
+                            type="text" value={user?.user_metadata?.full_name || ''} 
+                            className="w-full bg-white/5 border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:border-[#00ff88]/50 transition-all outline-none"
+                           />
+                        </div>
+                        <div className="space-y-1.5">
+                           <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest ml-1">Idade</label>
+                           <input 
+                            type="number" value={profile.age || ''} onChange={(e) => setProfile({...profile, age: Number(e.target.value)})}
+                            className="w-full bg-white/5 border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:border-[#00ff88]/50 transition-all outline-none"
+                           />
+                        </div>
+                     </div>
+                     <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1.5">
+                           <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest ml-1">Peso (kg)</label>
+                           <input 
+                            type="number" value={profile.weight} onChange={(e) => setProfile({...profile, weight: Number(e.target.value)})}
+                            className="w-full bg-white/5 border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:border-[#00ff88]/50 transition-all outline-none"
+                           />
+                        </div>
+                        <div className="space-y-1.5">
+                           <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest ml-1">Altura (cm)</label>
+                           <input 
+                            type="number" value={profile.height} onChange={(e) => setProfile({...profile, height: Number(e.target.value)})}
+                            className="w-full bg-white/5 border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:border-[#00ff88]/50 transition-all outline-none"
+                           />
+                        </div>
+                     </div>
+                     <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest ml-1">Objetivo Principal</label>
+                        <select 
+                          value={profile.goal} onChange={(e) => setProfile({...profile, goal: e.target.value as any})}
+                          className="w-full bg-white/5 border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:border-[#00ff88]/50 transition-all outline-none appearance-none"
+                        >
+                           <option value="Cutting">Cutting</option>
+                           <option value="Bulking">Bulking</option>
+                           <option value="Recomposição">Recomposição</option>
+                        </select>
+                     </div>
+                  </div>
+
+                  <div className="space-y-4 pt-4 border-t border-white/5">
+                     <h4 className="text-[10px] font-black text-white/20 uppercase tracking-widest">Preferências</h4>
+                     <div className="space-y-3">
+                        {[
+                          { label: 'Notificações de Treino', id: 'notif' },
+                          { label: 'Lembrete de Água', id: 'water' },
+                          { label: 'Resumo Semanal', id: 'weekly' },
+                        ].map(pref => (
+                          <div key={pref.id} className="flex items-center justify-between p-4 bg-white/3 rounded-2xl border border-white/5">
+                             <span className="text-xs text-white/80 font-bold">{pref.label}</span>
+                             <div className="w-10 h-5 bg-[#00ff88]/20 rounded-full relative">
+                                <div className="absolute right-1 top-1 w-3 h-3 bg-[#00ff88] rounded-full shadow-lg" />
+                             </div>
+                          </div>
+                        ))}
+                     </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 pt-6">
+                    <button 
+                      onClick={() => {
+                        const blob = new Blob([localStorage.getItem("shape_analyzer_data") || '{}'], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'meu-progresso-shapeia.json';
+                        a.click();
+                      }}
+                      className="py-4 bg-white/5 border border-white/10 text-white text-[10px] font-black uppercase tracking-widest rounded-2xl hover:bg-white/10 transition-all"
+                    >
+                      Exportar Dados
+                    </button>
+                    <button 
+                      onClick={() => {
+                        if(confirm('Tem certeza que deseja limpar tudo? Esta ação é irreversível.')) {
+                          if(confirm('CONFIRMAÇÃO FINAL: Apagar todos os dados permanentemente?')) {
+                            localStorage.clear();
+                            window.location.reload();
+                          }
+                        }
+                      }}
+                      className="py-4 bg-red-500/10 border border-red-500/20 text-red-500 text-[10px] font-black uppercase tracking-widest rounded-2xl hover:bg-red-500/20 transition-all"
+                    >
+                      Limpar Dados
+                    </button>
+                  </div>
+                </div>
+                <div className="p-6 bg-white/5">
+                   <button 
+                    onClick={handleSaveProfile}
+                    className="w-full py-4 bg-[#00ff88] text-black font-black uppercase tracking-[0.2em] rounded-2xl shadow-lg shadow-[#00ff88]/20 active:scale-95 transition-all"
+                   >
+                    Salvar Perfil
+                   </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* New Check-in Modal */}
+        <AnimatePresence>
+          {showCheckInModal && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+              <motion.div 
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                onClick={() => setShowCheckInModal(false)}
+                className="absolute inset-0 bg-black/90 backdrop-blur-md"
+              />
+              <motion.div 
+                initial={{ opacity: 0, y: 50 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 50 }}
+                className="relative w-full max-w-lg bg-[#0d1117] border border-white/10 rounded-[40px] overflow-hidden"
+              >
+                <div className="p-8 border-b border-white/5 flex items-center justify-between">
+                  <h3 className="text-lg font-black text-white italic uppercase tracking-widest">Novo Check-in Mensal</h3>
+                  <button onClick={() => setShowCheckInModal(false)} className="p-2 hover:bg-white/5 rounded-full"><X className="w-6 h-6 text-[#6b7280]" /></button>
+                </div>
+                <div className="p-8 space-y-8 max-h-[75vh] overflow-y-auto no-scrollbar">
+                   {/* Photo Upload Area */}
+                   <div className="grid grid-cols-3 gap-3">
+                      {(['front', 'back', 'side'] as const).map(side => (
+                        <div key={side} onClick={() => alert(`Câmera nativa: Tirar foto de ${side === 'front' ? 'frente' : side === 'back' ? 'costas' : 'lado'}`)} className="aspect-[3/4] bg-white/5 border border-dashed border-white/10 rounded-2xl flex flex-col items-center justify-center gap-2 group hover:border-[#00ff88]/50 cursor-pointer transition-all">
+                           <Camera className="w-6 h-6 text-[#6b7280] group-hover:text-[#00ff88]" />
+                           <span className="text-[8px] font-black uppercase text-[#6b7280]">{side === 'front' ? 'Frente' : side === 'back' ? 'Costas' : 'Lado'}</span>
+                        </div>
+                      ))}
+                   </div>
+
+                   <div className="grid grid-cols-2 gap-6">
+                      <div className="space-y-2">
+                         <label className="text-[10px] font-black text-[#6b7280] uppercase tracking-widest">Peso Atual (kg)</label>
+                         <input 
+                          type="number" value={checkInWeight || ''} onChange={(e) => setCheckInWeight(Number(e.target.value))}
+                          placeholder="00.0"
+                          className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white font-black text-lg focus:border-[#00ff88] transition-all outline-none"
+                         />
+                      </div>
+                      <div className="space-y-2">
+                         <label className="text-[10px] font-black text-[#6b7280] uppercase tracking-widest">BF% Manual (Opcional)</label>
+                         <input 
+                          type="number" value={checkInBf} onChange={(e) => setCheckInBf(e.target.value ? Number(e.target.value) : "")}
+                          placeholder="--"
+                          className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white font-black text-lg focus:border-[#ffb800] transition-all outline-none"
+                         />
+                      </div>
+                   </div>
+
+                   <div className="space-y-2">
+                      <label className="text-[10px] font-black text-[#6b7280] uppercase tracking-widest">Anotações Livres</label>
+                      <textarea 
+                        value={checkInNotes} onChange={(e) => setCheckInNotes(e.target.value)}
+                        placeholder="Como você se sente? Notas sobre força, sono, dieta..."
+                        className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-sm text-white/80 h-32 focus:border-[#00ff88] transition-all outline-none resize-none"
+                      />
+                   </div>
+                </div>
+                <div className="p-8 bg-white/5">
+                   <button 
+                    onClick={handleSaveCheckIn}
+                    className="w-full py-5 bg-[#00ff88] text-black font-black text-sm uppercase tracking-[0.3em] rounded-3xl shadow-xl shadow-[#00ff88]/20 hover:scale-[1.02] active:scale-[0.98] transition-all"
+                   >
+                    Salvar Check-in
+                   </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );
