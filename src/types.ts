@@ -39,6 +39,7 @@ export interface ShapeAnalysis {
     };
     tips: string[];
   };
+  fullMarkdownReport?: string;
 }
 
 export interface EvolutionEntry {
@@ -54,6 +55,7 @@ export interface EvolutionEntry {
 }
 
 export interface UserProfile {
+  name?: string;
   weight: number;
   height: number;
   goal: 'Cutting' | 'Bulking' | 'Recomposição';
@@ -145,6 +147,7 @@ export interface Exercise {
   technique: string;
   rest: string;
   tip: string;
+  why?: string;
   completed?: boolean;
 }
 

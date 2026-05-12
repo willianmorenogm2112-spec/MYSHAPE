@@ -37,10 +37,14 @@ import {
   Settings2,
   ShoppingCart,
   User,
-  Mail
+  Mail,
+  LogOut,
+  Bell,
+  Activity
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { supabase } from "./lib/supabase";
+import Markdown from 'react-markdown';
 import {
   Radar,
   RadarChart,
@@ -103,7 +107,7 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<
-    "analyze" | "diet" | "training" | "coach" | "profile" | "dashboard"
+    "analyze" | "diet" | "training" | "coach" | "profile" | "dashboard" | "recovery"
   >("dashboard");
   const [profileTab, setProfileTab] = useState<"resumo" | "historico" | "fotos" | "musculos">("resumo");
   const [historySubTab, setHistorySubTab] = useState<"treinos" | "analises">("treinos");
@@ -134,6 +138,8 @@ export default function App() {
     side?: string;
   }>({});
   const [profile, setProfile] = useState<UserProfile>({
+    name: "WILLIAN MORENO",
+    avatar: "https://i.pravatar.cc/150?u=willianmorenogm2112@gmail.com",
     weight: 80,
     height: 180,
     goal: "Recomposição",
@@ -188,6 +194,12 @@ export default function App() {
   >(null);
   const [waterIntake, setWaterIntake] = useState(0);
   const waterGoal = 3500; // 3.5 Liters
+  
+  useEffect(() => {
+    if (waterIntake > 0) {
+      saveData();
+    }
+  }, [waterIntake]);
 
   useEffect(() => {
     if (subscriptionExpiryDate) {
@@ -203,70 +215,29 @@ export default function App() {
     }
   }, [subscriptionExpiryDate]);
 
-  const saveData = () => {
-    const data = {
-      profile,
-      analysisCount,
-      waterIntake,
-      evolutionHistory,
-      personalizedTraining,
-      mealPlan,
-      isPremium,
-      subscriptionExpiryDate,
-      lastDietGenerationDate,
-      lastTrainingGenerationDate,
-      completedWorkouts,
-      progressCheckIns,
-      workoutHistory,
-      analysisHistory,
-      badges
-    };
-    localStorage.setItem("shape_analyzer_data", JSON.stringify(data));
-    alert("Dados salvos com sucesso!");
-  };
-
-  const loadData = () => {
-    const saved = localStorage.getItem("shape_analyzer_data");
-    if (saved) {
-      try {
-        const data = JSON.parse(saved);
-        setProfile(data.profile || profile);
-        setAnalysisCount(data.analysisCount || analysisCount);
-        setWaterIntake(data.waterIntake || waterIntake);
-        setEvolutionHistory(data.evolutionHistory || evolutionHistory);
-        setPersonalizedTraining(
-          data.personalizedTraining || personalizedTraining,
-        );
-        setMealPlan(data.mealPlan || mealPlan);
-        setIsPremium(data.isPremium || isPremium);
-        setSubscriptionExpiryDate(
-          data.subscriptionExpiryDate || subscriptionExpiryDate,
-        );
-        setLastDietGenerationDate(
-          data.lastDietGenerationDate || lastDietGenerationDate,
-        );
-        setLastTrainingGenerationDate(
-          data.lastTrainingGenerationDate || lastTrainingGenerationDate,
-        );
-        setCompletedWorkouts(data.completedWorkouts || completedWorkouts);
-        setProgressCheckIns(data.progressCheckIns || []);
-        setWorkoutHistory(data.workoutHistory || []);
-        setAnalysisHistory(data.analysisHistory || []);
-        setBadges(data.badges || badges);
-        alert("Dados carregados com sucesso!");
-      } catch (e) {
-        console.error("Failed to parse shape_analyzer_data:", e);
-        alert("Erro ao carregar dados salvos. O arquivo pode estar corrompido.");
-      }
-    } else {
-      alert("Nenhum dado salvo encontrado.");
-    }
-  };
-
   const [result, setResult] = useState<ShapeAnalysis | null>(null);
   const getMuscleStatus = (muscleName: string) => {
-    // Look in workoutHistory for last workout containing this muscle
-    const lastWorkout = [...workoutHistory].reverse().find(w => w.muscles.includes(muscleName));
+    // Normalization map
+    const normalization: Record<string, string[]> = {
+      'Peito': ['Peitoral', 'Peito', 'Chest', 'Supino', 'Peito Superior', 'Peito Inferior'],
+      'Costas Superior': ['Costas', 'Dorsal', 'Lates', 'Trapezio', 'Latissimo', 'Romboides'],
+      'Costas Inferior': ['Lombar', 'Eretores', 'Lower Back'],
+      'Ombros': ['Ombro', 'Deltoides', 'Ombros', 'Deltoide Anterior', 'Deltoide Lateral', 'Deltoide Posterior'],
+      'Bíceps': ['Biceps', 'Bíceps', 'Braço Anterior'],
+      'Tríceps': ['Triceps', 'Tríceps', 'Braço Posterior'],
+      'Abdômen': ['Abdomen', 'Abdômen', 'Core', 'Abs', 'Obliquos'],
+      'Quadríceps': ['Quadriceps', 'Quadríceps', 'Coxa Anterior', 'Pernas'],
+      'Posteriores': ['Isquiotibiais', 'Posterior de Coxa', 'Hamstrings', 'Pernas'],
+      'Glúteos': ['Gluteos', 'Glúteos', 'Gluteo Maior'],
+      'Panturrilhas': ['Panturrilhas', 'Gastrocnemio', 'Soleo']
+    };
+
+    const searchNames = normalization[muscleName] || [muscleName];
+
+    // Look in workoutHistory for last workout containing any of these names
+    const lastWorkout = [...workoutHistory].reverse().find(w => 
+      w.muscles.some((m: string) => searchNames.some(sn => m.toLowerCase().includes(sn.toLowerCase())))
+    );
     if (!lastWorkout) return { color: '#374151', status: 'Sem Dados', days: '?', text: 'text-gray-500', bg: 'bg-gray-700' };
     
     const diffTime = Math.abs(new Date().getTime() - new Date(lastWorkout.date).getTime());
@@ -295,6 +266,7 @@ export default function App() {
     const updated = [newCheckIn, ...progressCheckIns];
     setProgressCheckIns(updated);
     localStorage.setItem("progress_checkins", JSON.stringify(updated));
+    saveData();
     setShowCheckInModal(false);
     setCheckInPhotos({});
     setCheckInNotes("");
@@ -316,80 +288,7 @@ export default function App() {
     maxMass: number;
     currentMass: number;
   } | null>(null);
-  const [evolutionHistory, setEvolutionHistory] = useState<EvolutionEntry[]>([
-    {
-      date: "Out",
-      score: 58,
-      bf: 22,
-      weight: 90,
-      volume: 50,
-      definition: 40,
-      symmetry: 60,
-      consistency: 70,
-      photo:
-        "https://images.unsplash.com/photo-1583454110551-21f2fa2afe61?w=400&q=80",
-    },
-    {
-      date: "Nov",
-      score: 60,
-      bf: 21,
-      weight: 88,
-      volume: 52,
-      definition: 45,
-      symmetry: 62,
-      consistency: 75,
-      photo:
-        "https://images.unsplash.com/photo-1517836357463-d25dfeac3438?w=400&q=80",
-    },
-    {
-      date: "Dez",
-      score: 62,
-      bf: 20,
-      weight: 87,
-      volume: 55,
-      definition: 50,
-      symmetry: 65,
-      consistency: 78,
-      photo:
-        "https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b?w=400&q=80",
-    },
-    {
-      date: "Jan",
-      score: 65,
-      bf: 18,
-      weight: 85,
-      volume: 60,
-      definition: 55,
-      symmetry: 70,
-      consistency: 80,
-      photo:
-        "https://images.unsplash.com/photo-1594882645126-14020914d58d?w=400&q=80",
-    },
-    {
-      date: "Fev",
-      score: 68,
-      bf: 17,
-      weight: 84,
-      volume: 62,
-      definition: 58,
-      symmetry: 72,
-      consistency: 85,
-      photo:
-        "https://images.unsplash.com/photo-1534438327276-14e5300c3a48?w=400&q=80",
-    },
-    {
-      date: "Mar",
-      score: 72,
-      bf: 16,
-      weight: 82,
-      volume: 65,
-      definition: 65,
-      symmetry: 75,
-      consistency: 90,
-      photo:
-        "https://images.unsplash.com/photo-1517838276537-222297432acc?w=400&q=80",
-    },
-  ]);
+  const [evolutionHistory, setEvolutionHistory] = useState<EvolutionEntry[]>([]);
 
   useEffect(() => {
     if (evolutionHistory.length >= 2) {
@@ -422,7 +321,9 @@ export default function App() {
     trainingDays: 5,
     equipment: [] as string[],
     timePerSession: '60min',
-    experienceLevel: 'INTERMEDIÁRIO'
+    experienceLevel: 'INTERMEDIÁRIO',
+    focusMuscle: '',
+    planName: 'Meu Plano IA'
   });
   const [trainingFormFree, setTrainingFormFree] = useState({
     objective: '',
@@ -446,13 +347,9 @@ export default function App() {
     }
   }, [trainingPlan, trainingTab]);
   const [trainingDayIndex, setTrainingDayIndex] = useState(0);
-  const [userData, setUserData] = useState({
-    name: "WILLIAN MORENO",
-    avatar: "https://i.pravatar.cc/150?u=willianmorenogm2112@gmail.com"
-  });
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   
-  // Workour Flow State
+  // Workout Flow State
   const [isWorkoutActive, setIsWorkoutActive] = useState(false);
   const [activeWorkoutSession, setActiveWorkoutSession] = useState<{
     dayName: string;
@@ -524,6 +421,123 @@ export default function App() {
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
+  };
+
+  const handleGoogleLogin = async () => {
+    setAuthError(null);
+    setAuthLoading(true);
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+          queryParams: {
+            access_type: 'offline',
+            prompt: 'consent',
+          },
+        }
+      });
+      if (error) throw error;
+    } catch (error: any) {
+      setAuthError(error.message);
+      setAuthLoading(false);
+    }
+  };
+
+  const syncDataWithSupabase = async (userId: string, dataToSave: any) => {
+    try {
+      const { error } = await supabase
+        .from('user_data')
+        .upsert({ 
+          user_id: userId, 
+          data: dataToSave,
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'user_id' });
+      
+      if (error) throw error;
+    } catch (e) {
+      console.error("Erro ao sincronizar com Supabase:", e);
+    }
+  };
+
+  const loadDataFromSupabase = async (userId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('user_data')
+        .select('data')
+        .eq('user_id', userId)
+        .single();
+      
+      if (error && error.code !== 'PGRST116') throw error; // PGRST116 is empty result
+      
+      if (data?.data) {
+        const cloudData = data.data;
+        setProfile(cloudData.profile || profile);
+        setAnalysisCount(cloudData.analysisCount || 0);
+        setWaterIntake(cloudData.waterIntake || 0);
+        setEvolutionHistory(cloudData.evolutionHistory || []);
+        setPersonalizedTraining(cloudData.personalizedTraining || null);
+        setMealPlan(cloudData.mealPlan || null);
+        setDietPlan(cloudData.dietPlan || null);
+        setTrainingPlan(cloudData.trainingPlan || null);
+        setImages(cloudData.images || images);
+        setIsPremium(cloudData.isPremium || false);
+        setSubscriptionExpiryDate(cloudData.subscriptionExpiryDate || null);
+        setLastDietGenerationDate(cloudData.lastDietGenerationDate || null);
+        setLastTrainingGenerationDate(cloudData.lastTrainingGenerationDate || null);
+        setCompletedWorkouts(cloudData.completedWorkouts || []);
+        setProgressCheckIns(cloudData.progressCheckIns || []);
+        setWorkoutHistory(cloudData.workoutHistory || []);
+        setAnalysisHistory(cloudData.analysisHistory || []);
+        setBadges(cloudData.badges || badges);
+        if (cloudData.trainingDayIndex !== undefined) {
+          setTrainingDayIndex(cloudData.trainingDayIndex);
+        }
+        
+        // Also update local storage to keep sync
+        localStorage.setItem("shape_analyzer_data", JSON.stringify(cloudData));
+      }
+    } catch (e) {
+      console.error("Erro ao carregar dados do Supabase:", e);
+    }
+  };
+
+  useEffect(() => {
+    if (user) {
+      loadDataFromSupabase(user.id);
+    }
+  }, [user]);
+
+  const saveData = async (overrides: any = {}) => {
+    const data = {
+      profile,
+      analysisCount,
+      waterIntake,
+      evolutionHistory,
+      personalizedTraining,
+      mealPlan,
+      dietPlan,
+      trainingPlan,
+      images,
+      isPremium,
+      subscriptionExpiryDate,
+      lastDietGenerationDate,
+      lastTrainingGenerationDate,
+      completedWorkouts,
+      progressCheckIns,
+      workoutHistory,
+      analysisHistory,
+      badges,
+      trainingDayIndex,
+      ...overrides
+    };
+
+    
+    localStorage.setItem("shape_analyzer_data", JSON.stringify(data));
+    
+    if (user) {
+      await syncDataWithSupabase(user.id, data);
+    }
   };
 
   const [trainingAnswers, setTrainingAnswers] = useState<{
@@ -659,7 +673,7 @@ export default function App() {
       id: Math.random().toString(36).substr(2, 9),
       date: new Date().toLocaleString('pt-BR'),
       title: activeWorkoutSession.dayName,
-      muscles: Array.from(new Set(activeWorkoutSession.exercises.map((ex: any) => ex.musculo_foco || 'Músculo'))),
+      muscles: Array.from(new Set(activeWorkoutSession.exercises.map((ex: any) => ex.grupo_muscular || ex.musculo_foco || 'Geral'))),
       exercisesCount: activeWorkoutSession.exercises.length,
       duration: Math.floor(elapsedTime / 60),
       completed: true,
@@ -669,6 +683,18 @@ export default function App() {
       }))
     };
     setWorkoutHistory(prev => [newWorkoutHistoryItem, ...prev]);
+    
+    // Also mark as completed for today's UI
+    const today = new Date().toISOString().split("T")[0];
+    const checkInId = `${today}_${activeWorkoutSession.dayName}`;
+    setCompletedWorkouts(prev => [...prev, checkInId]);
+    setTrainingDayIndex((trainingDayIndex + 1) % (trainingPlan?.dias.length || 1));
+    
+    saveData({ 
+        workoutHistory: [newWorkoutHistoryItem, ...workoutHistory],
+        completedWorkouts: [...completedWorkouts, checkInId],
+        trainingDayIndex: (trainingDayIndex + 1) % (trainingPlan?.dias.length || 1)
+    });
     
     // Save to history
     const saved = localStorage.getItem("workout_history") || "[]";
@@ -827,6 +853,9 @@ export default function App() {
       const plan = await generateTrainingPlan(true, payload);
       setTrainingPlan(plan);
       setTrainingDayIndex(0);
+      setTrainingTab('my-plan');
+      setTrainingMode(null);
+      saveData({ trainingPlan: plan });
     } catch (err) {
       console.error(err);
       setError("Erro ao gerar plano de treino.");
@@ -851,6 +880,9 @@ export default function App() {
       const plan = await generateTrainingPlan(false, trainingFormFree);
       setTrainingPlan(plan);
       setTrainingDayIndex(0);
+      setTrainingTab('my-plan');
+      setTrainingMode(null);
+      saveData({ trainingPlan: plan });
     } catch (err) {
       console.error(err);
       setError("Erro ao gerar plano de treino.");
@@ -961,6 +993,7 @@ export default function App() {
     try {
       const plan = await generateMealPlan(true, payload);
       setDietPlan(plan);
+      saveData();
     } catch (err) {
       console.error(err);
       setError("Erro ao gerar plano de refeições.");
@@ -1020,6 +1053,7 @@ export default function App() {
     try {
       const plan = await generateMealPlan(false, payload);
       setDietPlan(plan);
+      saveData();
     } catch (err) {
       console.error(err);
       setError("Erro ao gerar plano de refeições.");
@@ -1133,6 +1167,11 @@ export default function App() {
   const handleAnalyze = async () => {
     let hasPhoto = !!images.front || !!images.back || !!images.side;
 
+    if (!profile.gender) {
+      setError("Por favor, selecione seu sexo antes de iniciar a análise.");
+      return;
+    }
+
     if (!isPremium && analysisCount >= 3) {
       setShowPremiumModal(true);
       return;
@@ -1201,6 +1240,7 @@ export default function App() {
       clearInterval(messageInterval);
       setIsAnalyzing(false);
       setIsScanning(false);
+      saveData();
     }
   };
 
@@ -1840,7 +1880,30 @@ export default function App() {
               </button>
             </form>
 
-            <div className="text-center">
+            <div className="text-center space-y-4">
+              <div className="relative">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-white/5"></div>
+                </div>
+                <div className="relative flex justify-center text-[10px] uppercase font-bold tracking-widest">
+                  <span className="bg-[#080c10] px-3 text-[#6b7280]">Ou continue com</span>
+                </div>
+              </div>
+
+              <button 
+                onClick={handleGoogleLogin}
+                type="button"
+                className="w-full h-14 bg-white/5 border border-white/10 text-white font-bold rounded-2xl flex items-center justify-center gap-3 hover:bg-white/10 transition-all active:scale-[0.98]"
+              >
+                <svg className="w-5 h-5" viewBox="0 0 24 24">
+                  <path fill="#EA4335" d="M5.266 9.765A7.077 7.077 0 0 1 12 4.909c1.69 0 3.218.6 4.418 1.582L19.91 3C17.782 1.145 15.055 0 12 0 7.27 0 3.198 2.698 1.24 6.65l4.026 3.115z" />
+                  <path fill="#FBBC05" d="M16.04 18.013c-1.09.363-2.26.56-3.414.56a7.077 7.077 0 0 1-7.36-4.909L1.24 16.78a11.965 11.965 0 0 0 10.76 7.22c3.136 0 6.002-1.036 8.243-2.782l-4.203-3.205z" />
+                  <path fill="#4285F4" d="M23.714 12.218c0-.838-.077-1.643-.21-2.422H12v4.582h6.573c-.282 1.486-1.123 2.741-2.382 3.586l4.203 3.205c2.454-2.264 3.868-5.591 3.868-9.364l-.55-.585z" />
+                  <path fill="#34A853" d="M5.266 14.235a7.077 7.077 0 0 1 0-4.47L1.24 6.65a11.965 11.965 0 0 0 0 10.7c1.442-2.923 4.026-3.115 4.026-3.115z" />
+                </svg>
+                Google Account
+              </button>
+
               <button 
                 onClick={() => setIsRegistering(!isRegistering)}
                 className="text-[12px] font-bold text-[#6b7280] hover:text-[#00ff88] transition-colors"
@@ -1866,37 +1929,52 @@ export default function App() {
         <ExerciseAnalysisModal />
 
         {/* Header */}
-        <header className="border-b border-[#00ff88]/10 bg-[#080c10]/90 backdrop-blur-[20px] sticky top-0 z-50">
-          <div className="px-4 h-[64px] flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Zap className="w-5 h-5 text-[#00ff88] fill-current drop-shadow-[0_0_8px_rgba(0,255,136,0.5)]" />
-              <span className="font-display font-normal text-[22px] tracking-wide text-[#f0f0f0] mt-1">
-                MEU SHAPE
-              </span>
-            </div>
-            {user && (
-              <button 
-                onClick={handleLogout}
-                className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-[#6b7280] hover:bg-white/10 hover:text-white transition-all"
-                title="Sair"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            )}
-
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-1.5 px-2.5 py-1 bg-[#111827] border border-white/5 rounded-full">
-                <Flame className="w-3.5 h-3.5 text-[#ffb800]" />
-                <span className="text-[10px] font-bold text-[#ffb800]">
-                  12<span className="text-[#6b7280]">d</span>
+        <header className="border-b border-white/5 bg-[#080c10]/95 backdrop-blur-xl sticky top-0 z-50">
+          <div className="px-5 h-[70px] flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-[var(--color-neon)]/10 flex items-center justify-center shadow-[0_0_15px_rgba(0,255,136,0.1)]">
+                <Zap className="w-5 h-5 text-[var(--color-neon)] fill-current" />
+              </div>
+              <div className="flex flex-col -space-y-1">
+                <span className="font-display font-black text-[18px] tracking-tight text-white uppercase italic">
+                  MEU SHAPE
+                </span>
+                <span className="text-[8px] font-black text-[var(--color-neon)] uppercase tracking-[0.3em] opacity-80">
+                  AI EVOLUTION
                 </span>
               </div>
-              <button
-                onClick={saveData}
-                className="w-8 h-8 rounded-full bg-[#111827] border border-white/5 flex items-center justify-center text-[12px] font-bold text-[#f0f0f0] active:scale-95 transition-transform"
-              >
-                WM
-              </button>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <div className="hidden xs:flex items-center gap-1.5 px-3 py-1.5 bg-white/5 border border-white/5 rounded-full">
+                <Flame className="w-3.5 h-3.5 text-[#ffb800]" />
+                <span className="text-[10px] font-black text-[#ffb800]">
+                  {completedWorkouts?.length || 0}<span className="text-[#6b7280]">d</span>
+                </span>
+              </div>
+              
+              <div className="flex items-center gap-1 p-1 bg-white/5 rounded-full border border-white/5">
+                <button 
+                  onClick={handleLogout}
+                  className="w-8 h-8 rounded-full flex items-center justify-center text-[#6b7280] hover:bg-red-500/10 hover:text-red-500 transition-all group"
+                  title="Sair"
+                >
+                  <LogOut className="w-4 h-4 group-active:scale-90 transition-transform" />
+                </button>
+                <div className="w-[1px] h-4 bg-white/10 mx-0.5" />
+                <button
+                  onClick={() => setShowProfileSettings(true)}
+                  className="w-8 h-8 rounded-full bg-gradient-to-br from-[var(--color-neon)] to-[#004d2c] border border-white/10 flex items-center justify-center overflow-hidden active:scale-95 transition-transform"
+                >
+                  {profile.avatar ? (
+                    <img src={profile.avatar} className="w-full h-full object-cover" />
+                  ) : (
+                    <span className="text-[10px] font-black text-black">
+                      {profile.name?.substring(0, 2).toUpperCase() || 'WM'}
+                    </span>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </header>
@@ -1917,8 +1995,8 @@ export default function App() {
                     {isEditingProfile ? (
                       <div className="flex items-center gap-2 mt-1">
                         <input 
-                          value={userData.name} 
-                          onChange={(e) => setUserData({ ...userData, name: e.target.value.toUpperCase() })}
+                          value={profile.name} 
+                          onChange={(e) => setProfile({ ...profile, name: e.target.value.toUpperCase() })}
                           className="text-[24px] font-display text-[#f0f0f0] font-bold tracking-tight bg-transparent border-b border-[var(--color-neon)] outline-none w-full max-w-[200px]"
                           onBlur={() => setIsEditingProfile(false)}
                           autoFocus
@@ -1929,7 +2007,7 @@ export default function App() {
                         onClick={() => setIsEditingProfile(true)}
                         className="text-[24px] font-display text-[#f0f0f0] font-bold tracking-tight cursor-pointer hover:text-[var(--color-neon)] transition-colors"
                       >
-                        {userData.name}
+                        {profile.name}
                       </h2>
                     )}
                   </div>
@@ -1944,7 +2022,7 @@ export default function App() {
                         if (file) {
                           const reader = new FileReader();
                           reader.onloadend = () => {
-                            setUserData({ ...userData, avatar: reader.result as string });
+                            setProfile({ ...profile, avatar: reader.result as string });
                           };
                           reader.readAsDataURL(file);
                         }
@@ -1954,7 +2032,7 @@ export default function App() {
                       className="w-12 h-12 rounded-full bg-[#111827] border-2 border-[var(--color-neon)] overflow-hidden shadow-[0_0_15px_rgba(0,255,136,0.2)] cursor-pointer"
                       onClick={() => document.getElementById('avatarInput')?.click()}
                     >
-                      <img src={userData.avatar} alt="Profile" className="w-full h-full object-cover" />
+                      {profile.avatar && <img src={profile.avatar} alt="Profile" className="w-full h-full object-cover" />}
                       <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                         <Camera className="w-4 h-4 text-white" />
                       </div>
@@ -2169,6 +2247,32 @@ export default function App() {
                           <option value="Bulking">Bulking</option>
                           <option value="Recomposição">Recomposição</option>
                         </select>
+                      </div>
+                    </div>
+                    <div className="space-y-1.5 flex flex-col">
+                      <label className="text-[11px] font-bold text-[#6b7280] uppercase tracking-widest pl-1">Sexo Biológico</label>
+                      <div className="flex bg-[#111827] border border-[#1f2937] rounded-[12px] p-1">
+                        <button onClick={() => setProfile(p => ({...p, gender: 'Masculino'}))} className={`flex-1 py-2 text-[12px] font-bold rounded-[8px] transition-all ${profile.gender === 'Masculino' ? 'bg-[#1f2937] text-[#00ff88]' : 'text-[#6b7280]'}`}>MASCULINO</button>
+                        <button onClick={() => setProfile(p => ({...p, gender: 'Feminino'}))} className={`flex-1 py-2 text-[12px] font-bold rounded-[8px] transition-all ${profile.gender === 'Feminino' ? 'bg-[#1f2937] text-[#ffb800]' : 'text-[#6b7280]'}`}>FEMININO</button>
+                      </div>
+                    </div>
+                    <div className="space-y-1.5 flex flex-col">
+                      <label className="text-[11px] font-bold text-[#6b7280] uppercase tracking-widest pl-1">
+                        Idade
+                      </label>
+                      <div className="relative">
+                        <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#6b7280]" />
+                        <input
+                          type="number"
+                          value={profile.age || 25}
+                          onChange={(e) =>
+                            setProfile((p) => ({
+                              ...p,
+                              age: Number(e.target.value),
+                            }))
+                          }
+                          className="w-full bg-[#111827] border border-[#1f2937] rounded-[12px] pl-9 pr-4 py-3 focus:outline-none focus:border-[#00ff88] focus:shadow-[0_0_0_3px_rgba(0,255,136,0.1)] transition-all text-[14px] text-[#f0f0f0]"
+                        />
                       </div>
                     </div>
                   </div>
@@ -3104,6 +3208,21 @@ export default function App() {
                           </div>
                         </div>
                       )}
+                      
+                      {/* Full Markdown Report Section */}
+                      {result.fullMarkdownReport && (
+                        <div className="p-6 rounded-[20px] bg-[#080c10] border border-[rgba(255,255,255,0.04)] mt-6 space-y-4">
+                          <div className="flex items-center gap-2 mb-4">
+                            <Sparkles className="w-5 h-5 text-[#00ff88]" />
+                            <h3 className="text-[20px] font-display text-[#f0f0f0] uppercase tracking-wide">
+                              Relatório Profissional
+                            </h3>
+                          </div>
+                          <div className="markdown-body prose prose-invert prose-green max-w-none">
+                            <Markdown>{result.fullMarkdownReport}</Markdown>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -3607,6 +3726,19 @@ export default function App() {
     animate={{ opacity: 1, y: 0 }}
     className="max-w-4xl mx-auto space-y-6 pb-12 px-2"
   >
+    {/* Workout Completed Status */}
+    {completedWorkouts.some(id => id.includes(new Date().toISOString().split('T')[0])) && (
+      <div className="bg-[#00ff88]/10 border border-[#00ff88]/30 rounded-2xl p-4 flex items-center justify-center gap-3">
+        <div className="w-8 h-8 rounded-full bg-[#00ff88] flex items-center justify-center">
+            <Check className="w-5 h-5 text-black" />
+        </div>
+        <div>
+          <h3 className="text-[12px] font-black text-[#00ff88] uppercase tracking-widest">Treino de Hoje Concluído</h3>
+          <p className="text-[10px] text-[#6b7280] uppercase font-bold">Obrigado pelo esforço. Aproveite o descanso e a dieta.</p>
+        </div>
+      </div>
+    )}
+
     {/* SUB-TAB NAV */}
     <div className="flex bg-[#0d1117] p-1 rounded-[16px] border border-[rgba(255,255,255,0.06)]">
       <button onClick={() => setTrainingTab('generator')} className={`flex-1 py-3 text-[12px] font-bold uppercase tracking-wider rounded-[12px] transition-all ${trainingTab === 'generator' ? 'bg-[#1f2937] text-white' : 'text-[#6b7280]'}`}>Gerar Plano</button>
@@ -3651,14 +3783,18 @@ export default function App() {
 
     {/* Redirect to My Plan if plan exists */}
     {trainingPlan && !isGeneratingTraining && !trainingMode && (
-         <div className="flex flex-col items-center justify-center p-8 bg-[#0d1117] rounded-[24px] border border-[rgba(255,255,255,0.06)] min-h-[300px]">
-             <h2 className="text-[20px] font-display font-medium text-[#f0f0f0] mb-4">Você já tem um treino!</h2>
-             <button onClick={() => setTrainingTab('my-plan')} className="bg-[#00ff88] text-[#080c10] px-6 py-3 rounded-full font-bold uppercase text-[12px]">Ver Meu Treino</button>
+         <div className="flex flex-col items-center justify-center p-8 bg-[#0d1117] rounded-[24px] border border-[rgba(255,255,255,0.06)] min-h-[400px]">
+             <h2 className="text-[20px] font-display font-medium text-[#f0f0f0] mb-2 uppercase tracking-tight">Você já tem um plano!</h2>
+             <p className="text-[14px] text-[#6b7280] mb-8 text-center max-w-xs">Deseja seguir seu plano atual ou criar uma nova periodização baseada nos dados atuais?</p>
+             <div className="flex flex-col gap-3 w-full max-w-xs">
+               <button onClick={() => setTrainingTab('my-plan')} className="w-full h-[52px] bg-[var(--color-neon)] text-[#080c10] rounded-2xl font-black uppercase text-[12px] shadow-[0_8px_20px_rgba(0,255,136,0.2)]">Continuar Plano Atual</button>
+               <button onClick={() => setTrainingMode('premium')} className="w-full h-[52px] bg-white/5 border border-white/10 text-white rounded-2xl font-black uppercase text-[12px] hover:bg-white/10 transition-all">Regerar Novo Plano (IA)</button>
+             </div>
          </div>
     )}
 
     {/* PREMIUM FORM */}
-    {!trainingPlan && !isGeneratingTraining && trainingMode === 'premium' && (
+    {!isGeneratingTraining && trainingMode === 'premium' && (
       <div className="space-y-6 animate-fade-in-up">
         <button onClick={() => setTrainingMode(null)} className="flex items-center gap-2 text-[#6b7280] hover:text-[#f0f0f0] text-[12px] font-bold uppercase tracking-wider transition-colors pt-2"><ArrowLeft className="w-4 h-4"/> Voltar</button>
         
@@ -3687,6 +3823,29 @@ export default function App() {
         <div className="bg-[#0d1117] border border-[rgba(255,255,255,0.06)] rounded-[20px] p-6 space-y-6">
           <h3 className="text-[18px] font-display text-[#f0f0f0] uppercase tracking-wide flex items-center gap-2"><Settings2 className="w-5 h-5 text-[#00ff88]"/> Ajustes de Treino</h3>
           
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Nome do Plano</label>
+            <input 
+              type="text" 
+              value={trainingFormPremium.planName}
+              onChange={(e) => setTrainingFormPremium(p => ({...p, planName: e.target.value}))}
+              placeholder="Ex: Treino Mutante, Foco Verão..."
+              className="w-full bg-[#111827] border border-[#1f2937] rounded-[12px] px-4 py-3 focus:outline-none focus:border-[#00ff88] text-[14px] text-[#f0f0f0]"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Músculo com Foco Extra (Opcional)</label>
+            <input 
+              type="text" 
+              value={trainingFormPremium.focusMuscle}
+              onChange={(e) => setTrainingFormPremium(p => ({...p, focusMuscle: e.target.value}))}
+              placeholder="Ex: Peitoral superior, Panturrilhas..."
+              className="w-full bg-[#111827] border border-[#1f2937] rounded-[12px] px-4 py-3 focus:outline-none focus:border-[#00ff88] text-[14px] text-[#f0f0f0]"
+            />
+            <p className="text-[10px] text-[#6b7280]">A IA ainda fará a correção baseada na sua foto, mas dará ênfase extra aqui.</p>
+          </div>
+
            <div className="space-y-2">
             <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Dias por Semana</label>
             <div className="flex gap-2">
@@ -3717,7 +3876,7 @@ export default function App() {
     )}
 
     {/* FREE FORM */}
-    {!trainingPlan && !isGeneratingTraining && trainingMode === 'free' && (
+    {!isGeneratingTraining && trainingMode === 'free' && (
       <div className="space-y-6 animate-fade-in-up">
         <button onClick={() => setTrainingMode(null)} className="flex items-center gap-2 text-[#6b7280] hover:text-[#f0f0f0] text-[12px] font-bold uppercase tracking-wider transition-colors pt-2"><ArrowLeft className="w-4 h-4"/> Voltar</button>
 
@@ -3782,13 +3941,15 @@ export default function App() {
     <div className="space-y-6 animate-fade-in-up">
         {trainingPlan ? (
             <div className="space-y-6">
-                <div className="bg-[#0d1117] border border-white/5 rounded-[28px] p-6 shadow-xl">
-                    <div className="flex justify-between items-center mb-6">
+                <div className="bg-[#0d1117] border border-white/5 rounded-[28px] p-6 shadow-xl relative overflow-hidden">
+                    <div className="absolute inset-0 bg-gradient-to-br from-[var(--color-neon)]/5 to-transparent pointer-events-none hover:opacity-70 transition-opacity duration-500"></div>
+                    <div className="flex justify-between items-center mb-6 relative z-10">
                       <div className="space-y-1">
-                        <h2 className="text-[18px] font-display text-white uppercase tracking-wider">Treino {trainingPlan.divisao}</h2>
-                        <p className="text-[11px] text-[var(--color-neon)] font-bold uppercase tracking-widest">{trainingPlan.dias[trainingDayIndex].musculo_foco}</p>
+                        <h2 className="text-[18px] font-display text-white uppercase tracking-wider">{trainingPlan.nome_do_plano || `Metodologia ${trainingPlan.divisao}`}</h2>
+                        <h3 className="text-[10px] font-black text-[#6b7280] uppercase tracking-widest mt-1">Foco de Hoje</h3>
+                        <p className="text-[14px] text-[var(--color-neon)] font-black uppercase tracking-widest">{trainingPlan.dias[trainingDayIndex].musculo_foco}</p>
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex flex-col items-end gap-2">
                         <button onClick={() => setIsEditing(!isEditing)} className="p-2 bg-white/5 rounded-xl text-[#6b7280] hover:text-white transition-colors">
                           <Settings2 className="w-5 h-5" />
                         </button>
@@ -3806,23 +3967,26 @@ export default function App() {
                       </div>
                     </div>
                     
-                    <div className="flex gap-2 overflow-x-auto pb-4 no-scrollbar">
+                    <div className="flex gap-2 overflow-x-auto pb-4 no-scrollbar relative z-10">
                       {trainingPlan.dias.map((dia: any, i: number) => (
                           <button key={i} onClick={() => setTrainingDayIndex(i)} 
-                            className={`flex-shrink-0 px-5 py-2.5 rounded-2xl text-[11px] font-bold uppercase tracking-widest transition-all ${trainingDayIndex === i ? 'bg-[var(--color-neon)] text-[#080c10] shadow-[0_0_15px_rgba(0,255,136,0.3)]' : 'bg-white/5 text-[#6b7280] hover:bg-white/10'}`}
+                            className={`flex-shrink-0 flex flex-col items-center justify-center gap-1 w-[88px] h-[80px] rounded-[24px] transition-all relative overflow-hidden flex-none snap-center ${trainingDayIndex === i ? 'bg-gradient-to-br from-[var(--color-neon)] to-[#00cc66] border-none shadow-[0_8px_25px_rgba(0,255,136,0.3)] scale-105 z-10' : 'bg-[#161b22] border border-white/5 hover:bg-white/5 opacity-70'}`}
                           >
-                          {dia.nome_dia.substring(0,3)}
+                           <span className={`text-[9px] uppercase tracking-[0.2em] font-black ${trainingDayIndex === i ? 'text-[#080c10]/60' : 'text-[#6b7280]'}`}>Treino</span>
+                           <span className={`text-2xl font-black italic ${trainingDayIndex === i ? 'text-[#080c10]' : 'text-white/50'}`}>{String.fromCharCode(65 + i)}</span>
                           </button>
                       ))}
                     </div>
                 </div>
 
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between px-2">
-                    <h3 className="text-[12px] font-bold text-[#6b7280] uppercase tracking-widest">Exercícios</h3>
-                    <button onClick={() => startWorkout(trainingPlan.dias[trainingDayIndex])} className="text-[11px] font-black text-[var(--color-neon)] uppercase tracking-wider bg-[var(--color-neon)]/10 px-4 py-2 rounded-xl flex items-center gap-2 hover:bg-[var(--color-neon)]/20 transition-all">
-                      <Play className="w-3.5 h-3.5 fill-current"/> Iniciar Todos
-                    </button>
+                    <div className="flex items-center justify-between px-2">
+                    <h3 className="text-[12px] font-bold text-[#6b7280] uppercase tracking-widest">Série {String.fromCharCode(65 + trainingDayIndex)}: {trainingPlan.dias[trainingDayIndex].exercicios.length} Exercícios</h3>
+                    <div className="flex gap-2">
+                      <button onClick={() => startWorkout(trainingPlan.dias[trainingDayIndex])} className="text-[11px] font-black text-[#080c10] uppercase tracking-wider bg-[var(--color-neon)] px-6 py-2.5 rounded-xl flex items-center gap-2 hover:opacity-90 transition-all shadow-[0_0_15px_rgba(0,255,136,0.3)]">
+                        <Play className="w-4 h-4 fill-current"/> INICIAR TREINO
+                      </button>
+                    </div>
                   </div>
 
                   {trainingPlan.dias[trainingDayIndex].exercicios.map((ex: any, i: number) => (
@@ -3847,6 +4011,11 @@ export default function App() {
                                     <h4 className="text-[16px] font-bold text-white group-hover:text-[var(--color-neon)] transition-colors">{ex.nome}</h4>
                                 )}
                               </div>
+                              {ex.why && (
+                                <p className="text-[11px] text-[#6b7280] italic leading-relaxed mt-1">
+                                  {ex.why}
+                                </p>
+                              )}
                             </div>
                             <button className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-[#6b7280] hover:bg-[var(--color-neon)] hover:text-black transition-all">
                               <Play className="w-4 h-4 fill-current ml-0.5" />
@@ -3899,6 +4068,110 @@ export default function App() {
   </motion.div>
 )}
 
+            {activeTab === "recovery" && (
+              <motion.div
+                key="recovery"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="max-w-xl mx-auto space-y-6 pb-24 px-4"
+              >
+                <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                  <div className="text-center space-y-1 py-4">
+                    <h2 className="text-2xl font-black text-white uppercase italic">Status de Recuperação</h2>
+                    <p className="text-[10px] text-[#00ff88] font-bold uppercase tracking-widest">Bio-Mapeamento de Fadiga Muscular</p>
+                  </div>
+
+                  {/* Muscle SVG Map */}
+                  <div className="bg-[#0d1117] border border-white/5 rounded-[40px] p-8 flex justify-center gap-8 relative overflow-hidden">
+                      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-[#00ff88]/5 via-transparent to-transparent"></div>
+                      
+                      <div className="relative w-full max-w-md flex flex-col items-center justify-center">
+                        <div className="relative w-48 h-80 flex gap-4">
+                           <div className="flex-1 relative">
+                              <div className="relative w-full h-full opacity-80 scale-110">
+                                 <svg viewBox="0 0 100 200" className="w-full h-full drop-shadow-[0_0_15px_rgba(0,0,0,0.5)]">
+                                    <path d="M40 10 Q50 5 60 10 L50 20 Z" fill="#374151" />
+                                    <circle cx="30" cy="35" r="8" fill={getMuscleStatus('Ombros').color} onClick={() => setSelectedMuscle('Ombros')} className="cursor-pointer" />
+                                    <circle cx="70" cy="35" r="8" fill={getMuscleStatus('Ombros').color} onClick={() => setSelectedMuscle('Ombros')} className="cursor-pointer" />
+                                    <rect x="35" y="32" width="15" height="15" rx="2" fill={getMuscleStatus('Peito').color} onClick={() => setSelectedMuscle('Peito')} className="cursor-pointer" />
+                                    <rect x="50" y="32" width="15" height="15" rx="2" fill={getMuscleStatus('Peito').color} onClick={() => setSelectedMuscle('Peito')} className="cursor-pointer" />
+                                    <path d="M22 35 L18 70" stroke={getMuscleStatus('Bíceps').color} strokeWidth="6" strokeLinecap="round" onClick={() => setSelectedMuscle('Bíceps')} className="cursor-pointer" />
+                                    <path d="M78 35 L82 70" stroke={getMuscleStatus('Bíceps').color} strokeWidth="6" strokeLinecap="round" onClick={() => setSelectedMuscle('Bíceps')} className="cursor-pointer" />
+                                    <rect x="40" y="50" width="20" height="25" rx="2" fill={getMuscleStatus('Abdômen').color} onClick={() => setSelectedMuscle('Abdômen')} className="cursor-pointer" />
+                                    <path d="M38 75 L35 140" stroke={getMuscleStatus('Quadríceps').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Quadríceps')} className="cursor-pointer" />
+                                    <path d="M62 75 L65 140" stroke={getMuscleStatus('Quadríceps').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Quadríceps')} className="cursor-pointer" />
+                                 </svg>
+                                 <p className="text-[7px] font-black text-white/20 uppercase text-center mt-2">FRENTE</p>
+                              </div>
+                           </div>
+                           <div className="flex-1 relative">
+                              <div className="relative w-full h-full opacity-80 scale-110">
+                                 <svg viewBox="0 0 100 200" className="w-full h-full drop-shadow-[0_0_15px_rgba(0,0,0,0.5)]">
+                                    <path d="M40 10 Q50 5 60 10 L50 20 Z" fill="#374151" />
+                                    <path d="M30 32 L70 32 L65 60 L35 60 Z" fill={getMuscleStatus('Costas Superior').color} onClick={() => setSelectedMuscle('Costas Superior')} className="cursor-pointer" />
+                                    <rect x="42" y="62" width="16" height="10" fill={getMuscleStatus('Costas Inferior').color} onClick={() => setSelectedMuscle('Costas Inferior')} className="cursor-pointer" />
+                                    <path d="M22 35 L18 70" stroke={getMuscleStatus('Tríceps').color} strokeWidth="6" strokeLinecap="round" onClick={() => setSelectedMuscle('Tríceps')} className="cursor-pointer" />
+                                    <path d="M78 35 L82 70" stroke={getMuscleStatus('Tríceps').color} strokeWidth="6" strokeLinecap="round" onClick={() => setSelectedMuscle('Tríceps')} className="cursor-pointer" />
+                                    <circle cx="42" cy="80" r="7" fill={getMuscleStatus('Glúteos').color} onClick={() => setSelectedMuscle('Glúteos')} className="cursor-pointer" />
+                                    <circle cx="58" cy="80" r="7" fill={getMuscleStatus('Glúteos').color} onClick={() => setSelectedMuscle('Glúteos')} className="cursor-pointer" />
+                                    <path d="M38 85 L35 140" stroke={getMuscleStatus('Posteriores').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Posteriores')} className="cursor-pointer" />
+                                    <path d="M62 85 L65 140" stroke={getMuscleStatus('Posteriores').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Posteriores')} className="cursor-pointer" />
+                                 </svg>
+                                 <p className="text-[7px] font-black text-white/20 uppercase text-center mt-2">COSTAS</p>
+                              </div>
+                           </div>
+                        </div>
+                      </div>
+                  </div>
+
+                  {/* Fatigue Legend */}
+                  <div className="flex items-center justify-center gap-4 bg-white/5 p-4 rounded-2xl border border-white/5">
+                      {[
+                        { label: 'Pronto', color: 'bg-[#00ff88]' },
+                        { label: 'Leve', color: 'bg-[#ffb800]' },
+                        { label: 'Fadigado', color: 'bg-[#ff4444]' },
+                        { label: 'Sem Dados', color: 'bg-[#374151]' },
+                      ].map(l => (
+                        <div key={l.label} className="flex items-center gap-1.5">
+                            <div className={`w-2 h-2 rounded-full ${l.color}`}></div>
+                            <span className="text-[8px] font-bold text-[#6b7280] uppercase tracking-widest">{l.label}</span>
+                        </div>
+                      ))}
+                  </div>
+
+                  <AnimatePresence>
+                    {selectedMuscle && (
+                      <motion.div 
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        className="bg-[#00ff88]/5 border border-[#00ff88]/20 rounded-3xl p-6 relative overflow-hidden"
+                      >
+                          <button 
+                            onClick={() => setSelectedMuscle(null)}
+                            className="absolute top-4 right-4 p-1 hover:bg-white/5 rounded-full"
+                          >
+                            <X className="w-4 h-4 text-[#6b7280]" />
+                          </button>
+                          <div className="flex items-start gap-4">
+                            <div className={`p-3 rounded-2xl ${getMuscleStatus(selectedMuscle).bg}`}>
+                                <Activity className="w-6 h-6 text-black" />
+                            </div>
+                            <div className="space-y-1">
+                                <p className="text-[10px] font-bold text-[#6b7280] uppercase tracking-[0.2em]">Detalhes de Grupo</p>
+                                <h4 className="text-xl font-black text-white uppercase italic">{selectedMuscle}</h4>
+                                <div className="flex items-center gap-1.5">
+                                    <span className={`text-[10px] font-black uppercase ${getMuscleStatus(selectedMuscle).text}`}>Status: {getMuscleStatus(selectedMuscle).status}</span>
+                                </div>
+                            </div>
+                          </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </motion.div>
+            )}
+
             {activeTab === "profile" && (
               <motion.div
                 key="profile"
@@ -3944,9 +4217,9 @@ export default function App() {
                   {/* Mini Stats Grid */}
                   <div className="grid grid-cols-4 gap-2 mt-6">
                     {[
-                      { label: "Score", value: result?.overallScore || evolutionHistory[evolutionHistory.length-1].score, trend: 'up', color: 'text-[#00ff88]' },
-                      { label: "BF%", value: `${result?.bfEstimate || evolutionHistory[evolutionHistory.length-1].bf}%`, trend: 'down', color: 'text-[#ffb800]' },
-                      { label: "Streak", value: "7 Dias", trend: 'up', color: 'text-[#ff4444]' },
+                      { label: "Score", value: result?.overallScore || (evolutionHistory.length > 0 ? evolutionHistory[evolutionHistory.length-1].score : 0), trend: 'up', color: 'text-[#00ff88]' },
+                      { label: "BF%", value: `${result?.bfEstimate || (evolutionHistory.length > 0 ? evolutionHistory[evolutionHistory.length-1].bf : 0)}%`, trend: 'down', color: 'text-[#ffb800]' },
+                      { label: "Streak", value: "1 Dia", trend: 'up', color: 'text-[#ff4444]' },
                       { label: "Treinos", value: completedWorkouts?.length || 0, trend: 'up', color: 'text-blue-400' },
                     ].map((stat, i) => (
                       <div key={i} className="bg-white/5 border border-white/5 rounded-2xl p-2.5 text-center">
@@ -3992,24 +4265,30 @@ export default function App() {
                           </div>
                         </div>
                         <div className="h-[240px] w-full">
-                          <RechartsResponsiveContainer width="100%" height="100%">
-                            <AreaChart data={evolutionHistory}>
-                              <defs>
-                                <linearGradient id="colorScore" x1="0" y1="0" x2="0" y2="1">
-                                  <stop offset="5%" stopColor="#00ff88" stopOpacity={0.3}/>
-                                  <stop offset="95%" stopColor="#00ff88" stopOpacity={0}/>
-                                </linearGradient>
-                              </defs>
-                              <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
-                              <XAxis dataKey="date" stroke="#ffffff20" fontSize={10} axisLine={false} tickLine={false} />
-                              <YAxis stroke="#ffffff20" fontSize={10} axisLine={false} tickLine={false} domain={[0, 100]} />
-                              <Tooltip 
-                                contentStyle={{ backgroundColor: '#0d1117', border: '1px solid #ffffff10', borderRadius: '12px' }}
-                                itemStyle={{ fontSize: '10px', color: '#00ff88' }}
-                              />
-                              <Area type="monotone" dataKey="score" stroke="#00ff88" strokeWidth={3} fillOpacity={1} fill="url(#colorScore)" />
-                            </AreaChart>
-                          </RechartsResponsiveContainer>
+                          {evolutionHistory.length > 0 ? (
+                            <RechartsResponsiveContainer width="100%" height="100%">
+                              <AreaChart data={evolutionHistory}>
+                                <defs>
+                                  <linearGradient id="colorScore" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%" stopColor="#00ff88" stopOpacity={0.3}/>
+                                    <stop offset="95%" stopColor="#00ff88" stopOpacity={0}/>
+                                  </linearGradient>
+                                </defs>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
+                                <XAxis dataKey="date" stroke="#ffffff20" fontSize={10} axisLine={false} tickLine={false} />
+                                <YAxis stroke="#ffffff20" fontSize={10} axisLine={false} tickLine={false} domain={[0, 100]} />
+                                <Tooltip 
+                                  contentStyle={{ backgroundColor: '#0d1117', border: '1px solid #ffffff10', borderRadius: '12px' }}
+                                  itemStyle={{ fontSize: '10px', color: '#00ff88' }}
+                                />
+                                <Area type="monotone" dataKey="score" stroke="#00ff88" strokeWidth={3} fillOpacity={1} fill="url(#colorScore)" />
+                              </AreaChart>
+                            </RechartsResponsiveContainer>
+                          ) : (
+                            <div className="h-full flex items-center justify-center border border-dashed border-white/10 rounded-2xl">
+                              <p className="text-[#6b7280] text-[10px] uppercase font-bold tracking-widest italic">Nada para exibir ainda.</p>
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -4018,9 +4297,9 @@ export default function App() {
                         <h3 className="text-[10px] font-black uppercase tracking-widest text-white/40 ml-1">Evolução de Métricas</h3>
                         <div className="grid grid-cols-1 gap-3">
                           {[
-                            { name: "Peso Corporal", value: `${profile.weight}kg`, change: "-3.2kg", trend: 'up', color: 'text-[#00ff88]' },
-                            { name: "BF% Estimado", value: `${result?.bfEstimate || 18}%`, change: "-2.1%", trend: 'down', color: 'text-[#ffb800]' },
-                            { name: "Symmetry Score", value: "82/100", change: "+5", trend: 'up', color: 'text-blue-400' },
+                            { name: "Peso Corporal", value: `${profile.weight}kg`, change: "--", trend: 'up', color: 'text-[#00ff88]' },
+                            { name: "BF% Estimado", value: `${result?.bfEstimate || 0}%`, change: "--", trend: 'down', color: 'text-[#ffb800]' },
+                            { name: "Symmetry Score", value: `${result?.metrics.symmetry || 0}/100`, change: "--", trend: 'up', color: 'text-blue-400' },
                           ].map((metric, i) => (
                             <div key={i} className="bg-[#0d1117] border border-white/5 rounded-2xl p-4 flex items-center justify-between">
                               <div>
@@ -4032,11 +4311,16 @@ export default function App() {
                                   {metric.change}
                                 </span>
                                 <div className="h-6 w-24 mt-2">
-                                  {/* Sparkline simulation */}
+                                  {/* Sparkline simulation using history if available */}
                                   <div className="flex items-end gap-0.5 h-full">
-                                    {[30, 45, 35, 60, 50, 75, 65].map((h, j) => (
-                                      <div key={j} className="flex-1 bg-[#00ff88]/20 rounded-full" style={{ height: `${h}%` }} />
-                                    ))}
+                                    {evolutionHistory.length >= 7 ? 
+                                       evolutionHistory.slice(-7).map((h, j) => (
+                                          <div key={j} className="flex-1 bg-[#00ff88]/20 rounded-full" style={{ height: `${h.score}%` }} />
+                                       )) : 
+                                       [10, 10, 10, 10, 10, 10, 10].map((h, j) => (
+                                          <div key={j} className="flex-1 bg-white/5 rounded-full" style={{ height: `${h}%` }} />
+                                       ))
+                                    }
                                   </div>
                                 </div>
                               </div>
@@ -4109,12 +4393,14 @@ export default function App() {
                             </div>
                           ))
                         ) : (
-                          (analysisHistory.length > 0 ? analysisHistory : [
-                            { id: '1', date: '11 Maio 2026', overallScore: 68, bfEstimate: 17, category: 'Fitness', frontPhoto: 'https://images.unsplash.com/photo-1594882645126-14020914d58d?w=400&q=80' }
-                          ]).map((item: any) => (
+                          analysisHistory.length > 0 ? analysisHistory.map((item: any) => (
                             <div key={item.id} className="bg-[#0d1117] border border-white/5 rounded-2xl p-4 flex items-center gap-4 group">
-                               <div className="w-16 h-20 rounded-xl overflow-hidden border border-white/10 shrink-0">
-                                 <img src={item.frontPhoto} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all" />
+                               <div className="w-16 h-20 rounded-xl overflow-hidden border border-white/10 shrink-0 text-center flex items-center justify-center bg-white/5">
+                                 {item.frontPhoto ? (
+                                   <img src={item.frontPhoto} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all" />
+                                 ) : (
+                                   <Activity className="w-6 h-6 text-[#6b7280]" />
+                                 )}
                                </div>
                                <div className="flex-1">
                                  <p className="text-[9px] font-bold text-[#6b7280] uppercase mb-0.5">{item.date}</p>
@@ -4132,7 +4418,11 @@ export default function App() {
                                </div>
                                <ChevronRight className="w-5 h-5 text-[#6b7280] group-hover:text-white transition-all" />
                             </div>
-                          ))
+                          )) : (
+                            <div className="p-8 text-center border border-dashed border-white/10 rounded-2xl">
+                              <p className="text-[#6b7280] text-[10px] uppercase font-bold tracking-widest italic">Nenhuma análise registrada.</p>
+                            </div>
+                          )
                         )}
                       </div>
                     </div>
@@ -4192,10 +4482,7 @@ export default function App() {
 
                       {/* Gallery */}
                       <div className="grid grid-cols-2 gap-4">
-                        {(progressCheckIns.length > 0 ? progressCheckIns : [
-                          { id: '1', date: 'Maio 2026', weight: 82.5, photos: { front: 'https://images.unsplash.com/photo-1594882645126-14020914d58d?w=400&q=80' } },
-                          { id: '2', date: 'Abril 2026', weight: 84.2, photos: { front: 'https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b?w=400&q=80' } }
-                        ]).map((checkin: any) => (
+                        {progressCheckIns.length > 0 ? progressCheckIns.map((checkin: any) => (
                           <div key={checkin.id} className="relative group aspect-[3/4] rounded-3xl overflow-hidden border border-white/5 bg-white/5">
                             <img src={checkin.photos.front} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-700" />
                             <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-4 flex flex-col justify-end">
@@ -4206,31 +4493,34 @@ export default function App() {
                               {checkin.date}
                             </div>
                           </div>
-                        ))}
+                        )) : (
+                          <div className="col-span-2 p-12 text-center border border-dashed border-white/10 rounded-[32px]">
+                            <Camera className="w-8 h-8 text-[#6b7280] mx-auto opacity-20 mb-3" />
+                            <p className="text-[#6b7280] text-[10px] uppercase font-bold tracking-widest italic">Nenhum check-in fotográfico.</p>
+                          </div>
+                        )}
                       </div>
 
                       {/* Vertical Timeline */}
-                      <div className="relative pl-8 space-y-6 before:absolute before:left-3 before:top-2 before:bottom-2 before:w-[2px] before:bg-white/5">
-                        {[
-                          { date: 'Maio 2026', weight: 82.5, diff: '-1.7kg', score: 68 },
-                          { date: 'Abril 2026', weight: 84.2, diff: '-2.1kg', score: 65 },
-                          { date: 'Março 2026', weight: 86.3, diff: '--', score: 62 },
-                        ].map((m, i) => (
-                          <div key={i} className="relative">
-                            <div className="absolute -left-8 top-1.5 w-6 h-6 rounded-full bg-[#0d1117] border-2 border-[#00ff88] z-10" />
-                            <div className="bg-[#0d1117] border border-white/5 rounded-2xl p-4 flex items-center justify-between">
-                              <div>
-                                <p className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest">{m.date}</p>
-                                <p className="text-sm font-black text-white">{m.weight}kg</p>
-                              </div>
-                              <div className="text-right">
-                                <p className="text-[10px] font-black text-[#00ff88]">{m.diff}</p>
-                                <p className="text-[9px] text-[#6b7280] uppercase font-bold">Score: {m.score}</p>
+                      {progressCheckIns.length > 0 && (
+                        <div className="relative pl-8 space-y-6 before:absolute before:left-3 before:top-2 before:bottom-2 before:w-[2px] before:bg-white/5">
+                          {progressCheckIns.map((m, i) => (
+                            <div key={i} className="relative">
+                              <div className="absolute -left-8 top-1.5 w-6 h-6 rounded-full bg-[#0d1117] border-2 border-[#00ff88] z-10" />
+                              <div className="bg-[#0d1117] border border-white/5 rounded-2xl p-4 flex items-center justify-between">
+                                <div>
+                                  <p className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest">{m.date}</p>
+                                  <p className="text-sm font-black text-white">{m.weight}kg</p>
+                                </div>
+                                <div className="text-right">
+                                  <p className="text-[10px] font-black text-[#00ff88]">{i < progressCheckIns.length - 1 ? (m.weight - progressCheckIns[i+1].weight).toFixed(1) + 'kg' : '--'}</p>
+                                  <p className="text-[9px] text-[#6b7280] uppercase font-bold">BF: {m.bf || '--'}%</p>
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        ))}
-                      </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -4346,7 +4636,7 @@ export default function App() {
                                 <div className="space-y-1">
                                    <p className="text-[9px] font-bold text-[#6b7280] uppercase">Próximo Treino</p>
                                    <p className="text-sm font-black text-[#00ff88]">
-                                      {getMuscleStatus(selectedMuscle).days >= 3 ? 'Pronto Agora' : `Daqui ${3 - (Number(getMuscleStatus(selectedMuscle).days) || 0)} dias`}
+                                      {Number(getMuscleStatus(selectedMuscle).days) >= 3 ? 'Pronto Agora' : `Daqui ${3 - (Number(getMuscleStatus(selectedMuscle).days) || 0)} dias`}
                                    </p>
                                 </div>
                              </div>
@@ -4395,7 +4685,7 @@ export default function App() {
                                  <div className="text-right">
                                     <p className={`text-[10px] font-black uppercase tracking-widest ${status.text}`}>{status.status}</p>
                                     <div className="w-20 h-1 bg-white/5 rounded-full mt-1.5 overflow-hidden">
-                                       <div className={`h-full ${status.bg}`} style={{ width: `${Math.max(0, 100 - (status.days * 20))}%` }}></div>
+                                       <div className={`h-full ${status.bg}`} style={{ width: `${Math.max(0, 100 - ((Number(status.days) || 0) * 20))}%` }}></div>
                                     </div>
                                  </div>
                               </div>
@@ -4804,7 +5094,7 @@ export default function App() {
           <div className="flex items-center justify-between h-[72px]">
             {[
               { id: "dashboard", icon: <Target />, label: "Início" },
-              { id: "analyze", icon: <Camera />, label: "Análise" },
+              { id: "recovery", icon: <Activity />, label: "Corpo" },
               { id: "diet", icon: <Utensils />, label: "Dieta" },
               { id: "training", icon: <Dumbbell />, label: "Treino" },
               { id: "profile", icon: <User />, label: "Perfil" },
@@ -4855,7 +5145,8 @@ export default function App() {
                         <div className="space-y-1.5">
                            <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest ml-1">Nome Completo</label>
                            <input 
-                            type="text" value={user?.user_metadata?.full_name || ''} 
+                            type="text" value={profile.name || user?.user_metadata?.full_name || ''} 
+                            onChange={(e) => setProfile({...profile, name: e.target.value})}
                             className="w-full bg-white/5 border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:border-[#00ff88]/50 transition-all outline-none"
                            />
                         </div>

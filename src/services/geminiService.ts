@@ -4,82 +4,120 @@ const API_KEY = process.env.GEMINI_API_KEY || "";
 
 const safeParseJSON = (text: string) => {
   try {
-    return JSON.parse(text);
+    // Remove markdown codeblock from start/end if present
+    const cleanText = text.replace(/^```json/im, "").replace(/^```/im, "").trim();
+    return JSON.parse(cleanText);
   } catch (e) {
     // Try to extract JSON between first { and last }
     const start = text.indexOf('{');
     const end = text.lastIndexOf('}');
     if (start !== -1 && end !== -1) {
       try {
-        return JSON.parse(text.substring(start, end + 1));
+        const jsonStr = text.substring(start, end + 1)
+          .replace(/\\n/g, "\\\\n") 
+          .replace(/\n/g, "\\n")
+          .replace(/\r/g, "\\r")
+          .replace(/\t/g, "\\t");
+        return JSON.parse(jsonStr);
       } catch (innerE) {
         console.error("Failed to parse extracted JSON:", innerE);
+        console.error("String was:", text.substring(start, end + 1));
       }
     }
     return {};
   }
 };
 
-export const analyzeShape = async (images: { front?: string; back?: string; side?: string }, profile: { weight: number; goal: string }, isPump: boolean = false) => {
+export const analyzeShape = async (images: { front?: string; back?: string; side?: string }, profile: { weight: number; goal: string; age?: number; gender?: string; gymLevel?: string }, isPump: boolean = false) => {
   if (!API_KEY) {
     throw new Error("API Key not found. Please add GEMINI_API_KEY to secrets.");
   }
 
   const ai = new GoogleGenAI({ apiKey: API_KEY });
 
+  const definitivePrompt = `Você é um sistema de análise corporal de nível profissional. Sua função não é apenas descrever o físico da pessoa — você age como um treinador elite, especialista em biomecânica, analista postural, consultor de hipertrofia e estrategista de treino e dieta.
+
+Ao receber as fotos, gere uma análise completa, técnica, detalhada e personalizada. NUNCA gere respostas genéricas. Cada análise deve parecer feita exclusivamente para aquele físico.
+
+# PRÉ-ANÁLISE — CONTEXTO DO USUÁRIO
+Dados do usuário:
+- Sexo e idade: ${profile.gender || 'Não informado'}, ${profile.age || 'Não informado'} anos
+- Peso: ${profile.weight}kg
+- Objetivo principal: ${profile.goal}
+- Nível de experiência: ${profile.gymLevel || 'Não informado'}
+
+# ETAPA 1 — ANÁLISE VISUAL COMPLETA
+1.1 Visão Geral do Shape (Biotipo, BF, Nível muscular, Proporção)
+1.2 Estrutura Corporal (V-taper, Upper/Lower)
+1.3 Análise por Grupo Muscular (Superior, Core, Inferior com notas 0-10)
+1.4 Pontos Fortes (3-5 destaques e como potencializar)
+1.5 Pontos Fracos (3-5 limitadores e estratégia)
+1.6 Simetria e Assimetrias (desvios e como corrigir)
+1.7 Análise Postural (desvios e corretivos)
+1.8 Condicionamento
+1.9 Potencial Genético
+
+# ETAPA 2 — ESTRATÉGIA INTELIGENTE
+Decisão e justificativa (Bulk, Cutting, Recomposição, Mini cut).
+
+# ETAPA 3 — PLANO DE TREINO ULTRA PERSONALIZADO
+3.1 Parâmetros (divisão, ciclo)
+3.2 Treino Detalhado (use tabelas Markdown com: Exercício | Séries | Reps | Cadência | Descanso | Observações)
+3.3 Treino Corretivo Integrado
+3.4 Progressão
+3.5 Cardio
+
+# ETAPA 4 — PLANO NUTRICIONAL ESTRATÉGICO
+4.1 Estimativas Calóricas
+4.2 Macros
+4.3 Plano Alimentar — Dia Típico (Use tabelas: Horário | Refeição | Alimentos | Macros | Objetivo)
+4.4 Estratégias Nutricionais
+4.5 Suplementação (Tabela: Suplemento | Dosagem | Timing | Justificativa)
+
+# ETAPA 5 — PLANO DE EVOLUÇÃO
+Fases 1, 2, 3 e 4. Marcos e reavaliação.
+
+# ETAPA 6 — NOTA GERAL E RESUMO EXECUTIVO
+Notas 0-10 para músculos e Resumo final impactante.`;
+
   const parts = [
     {
-      text: `Você é um juiz profissional de fisiculturismo e coach de alta performance. 
-      Analise as imagens deste físico (frente, costas e lado, se disponíveis) e forneça um feedback detalhado EM PORTUGUÊS.
-      Considere o peso do usuário (${profile.weight}kg) e o objetivo (${profile.goal}).
+      text: `ATENÇÃO: O usuário configurou o seguinte PROMPT DEFINITIVO para a estruturação do relatório:
       
-      ${isPump ? "ESTA É UMA FOTO PÓS-TREINO (PUMP). Compare com o estado de repouso esperado para este físico, analisando vascularização e volume temporário." : ""}
-      
-      IMPORTANTE: Todas as descrições, análises, pontos fortes, pontos fracos e dicas DEVEM estar em português do Brasil.
-      
-      Retorne os dados estritamente no formato JSON seguindo este esquema:
-      {
-        "overallScore": number (0-100),
-        "bfEstimate": number (estimativa de percentual de gordura),
-        "metrics": {
-          "volume": number (0-100),
-          "definition": number (0-100),
-          "symmetry": number (0-100),
-          "density": number (0-100)
-        },
-        "proportions": {
-          "description": string (em português),
-          "imbalances": string[] (ex: ["Braço esquerdo levemente menor"])
-        },
-        "analysis": {
-          "strengths": string[] (em português),
-          "weaknesses": string[] (em português),
-          "summary": string (em português),
-          "pumpAnalysis": {
-            "vascularityScore": number (0-100),
-            "volumeIncrease": string (ex: "Aumento de 2cm nos bíceps"),
-            "comparison": string (comparação com estado de repouso)
-          } (opcional, apenas se isPump for true)
-        },
-        "symmetryRanking": {
-          "score": number (0-100),
-          "position": number,
-          "percentile": number,
-          "globalPosition": string (ex: "Top 5% da comunidade")
-        },
-        "recommendations": {
-          "trainingFocus": string (em português),
-          "correctiveExercises": string[] (em português),
-          "dietPhase": "Cutting" | "Bulking" | "Recomposição",
-          "macros": {
-            "calories": number,
-            "protein": number,
-            "carbs": number,
-            "fats": number
-          },
-          "tips": string[] (em português)
-        }
-      }`
+${definitivePrompt}
+
+${isPump ? "ESTA É UMA FOTO PÓS-TREINO (PUMP). Considere a vascularização e o volume temporário." : ""}
+
+IMPORTANTE: Para integrar perfeitamente com a UI do aplicativo, você deve retornar a resposta ESTRITAMENTE em formato JSON perfeitamente válido. Faça o escape de todas as aspas dentro de strings usando \\".
+
+Esquema JSON EXATO exigido:
+{
+  "overallScore": number (nota de 0-100 refletindo a Etapa 6),
+  "bfEstimate": number (estimativa de percentual de gordura),
+  "metrics": {
+    "volume": number (0-100),
+    "definition": number (0-100),
+    "symmetry": number (0-100),
+    "density": number (0-100)
+  },
+  "proportions": {
+    "description": string (breve),
+    "imbalances": string[] (lista de assimetrias encontradas)
+  },
+  "analysis": {
+    "strengths": string[],
+    "weaknesses": string[],
+    "summary": string
+  },
+  "recommendations": {
+    "trainingFocus": string,
+    "correctiveExercises": string[],
+    "dietPhase": "Cutting" | "Bulking" | "Recomposição",
+    "macros": { "calories": number, "protein": number, "carbs": number, "fats": number },
+    "tips": string[]
+  },
+  "fullMarkdownReport": string (TEXTO COMPLETO DO RELATÓRIO AQUI. Use formatacão Markdown. IMPORTANTE: ESCAPE CORRETAMENTE O TEXTO PARA SER VÁLIDO EM JSON (use \\n para quebras de linha e \\" para aspas!). Escreva a Etapa 1 até a 6 com riqueza técnica.)
+}`
     }
   ];
 
@@ -100,14 +138,20 @@ export const analyzeShape = async (images: { front?: string; back?: string; side
   }
 
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: "gemini-3.1-pro-preview",
     contents: [{ parts }],
     config: {
       responseMimeType: "application/json",
     }
   });
 
-  return safeParseJSON(response.text || "{}");
+  const parsed = safeParseJSON(response.text || "{}");
+  
+  // Ensure metrics exist to prevent Uncaught TypeError
+  const defaultMetrics = { volume: 50, definition: 50, symmetry: 50, density: 50 };
+  if (!parsed.metrics) parsed.metrics = defaultMetrics;
+  
+  return parsed;
 };
 
 export const projectShape = async (image: string, type: 'fat-loss' | 'muscle-gain') => {
@@ -117,7 +161,7 @@ export const projectShape = async (image: string, type: 'fat-loss' | 'muscle-gai
     : "Edite esta imagem para simular como o corpo ficaria com +5kg de massa muscular magra, aumentando o volume dos ombros, peito e braços, mantendo a definição.";
 
   const response = await ai.models.generateContent({
-    model: 'gemini-1.5-flash',
+    model: 'gemini-flash-latest',
     contents: {
       parts: [
         { inlineData: { data: image.split(",")[1], mimeType: "image/jpeg" } },
@@ -137,7 +181,7 @@ export const projectShape = async (image: string, type: 'fat-loss' | 'muscle-gai
 export const generatePersonalizedTraining = async (analysis: any, profile: any, quizAnswers: any) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: "gemini-flash-latest",
     contents: `Você é um treinador de elite. Com base na análise do físico: ${JSON.stringify(analysis)} 
     e no perfil do usuário: ${JSON.stringify(profile)}, crie um plano de treinamento semanal PREMIUM e ESPECÍFICO.
     Respostas do Quiz do Usuário: ${JSON.stringify(quizAnswers)}
@@ -164,7 +208,8 @@ export const generatePersonalizedTraining = async (analysis: any, profile: any, 
               "reps": "5-7",
               "technique": "Carga Máxima",
               "rest": "2 min",
-              "tip": "Foco na fase excêntrica (4 seg)"
+              "tip": "Foco na fase excêntrica (4 seg)",
+              "why": "Explicação do porquê este exercício foi escolhido com base na sua análise"
             }
           ],
           "macros": {
@@ -188,7 +233,7 @@ export const generatePersonalizedTraining = async (analysis: any, profile: any, 
 export const analyzeFoodPhoto = async (image: string) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: "gemini-flash-latest",
     contents: [
       { inlineData: { data: image.split(",")[1], mimeType: "image/jpeg" } },
       { text: `Analise esta foto de comida. Identifique os alimentos, estime o peso de cada um e calcule os macros.
@@ -223,7 +268,7 @@ export const analyzeFoodPhoto = async (image: string) => {
 export const analyzeExerciseVideo = async (videoData: string) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: "gemini-flash-latest",
     contents: [
       { inlineData: { data: videoData.split(",")[1], mimeType: "video/mp4" } },
       { text: `Analise a biomecânica deste exercício. Identifique erros de execução e forneça correções pontuais.
@@ -291,7 +336,7 @@ export const generateMealPlan = async (isPremium: boolean, data: any) => {
   USE PORTUGUÊS DO BRASIL.`;
 
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-pro",
+    model: "gemini-3.1-pro-preview",
     contents: basePrompt,
     config: {
       responseMimeType: "application/json",
@@ -309,10 +354,14 @@ export const generateTrainingPlan = async (isPremium: boolean, data: any) => {
   O usuário enviou os seguintes dados:
   ${JSON.stringify(data)}
   
-  ${isPremium ? "Este é um plano PREMIUM baseado em análise de inteligência artificial do físico do usuário (considerando assimetrias e pontos fracos). Use a análise para criar uma observação especial e exercícios corretivos." : "Este é um plano baseado em dados manuais do usuário."}
+  ${isPremium ? `Este é um plano PREMIUM baseado em análise de inteligência artificial do físico do usuário. 
+  MUITO IMPORTANTE: 
+  - Se o usuário especificou 'focusMuscle' (${data.focusMuscle}), você DEVE dar ênfase extra nesse músculo no treino, mas SEM ignorar a correção geral baseada na foto (assimetrias e pontos fracos).
+  - O nome do plano DEVE ser o 'planName' (${data.planName}) caso o usuário tenha fornecido.` : "Este é um plano baseado em dados manuais do usuário."}
   
   Retorne ESTE ESQUEMA JSON EXATO:
   {
+    "nome_do_plano": "O planName fornecido ou um nome criativo",
     "foco_principal": "Descrição do foco do treino",
     "divisao": "Ex: ABC",
     "dias": [
@@ -327,7 +376,8 @@ export const generateTrainingPlan = async (isPremium: boolean, data: any) => {
             "descanso_segundos": 90,
             "tecnica_especial": "Normal",
             "grupo_muscular": "Peitoral",
-            "prioridade": "normal"
+            "prioridade": "normal",
+            "why": "Explique o porquê científico/biomecânico deste exercício estar aqui baseado no objetivo/shape do usuário"
           }
         ]
       }
@@ -337,7 +387,7 @@ export const generateTrainingPlan = async (isPremium: boolean, data: any) => {
   USE PORTUGUÊS DO BRASIL.`;
 
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-pro",
+    model: "gemini-3.1-pro-preview",
     contents: basePrompt,
     config: {
       responseMimeType: "application/json",
@@ -350,7 +400,7 @@ export const generateTrainingPlan = async (isPremium: boolean, data: any) => {
 export const getExerciseDetails = async (exerciseName: string) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: "gemini-flash-latest",
     contents: `Explique a execução perfeita do exercício "${exerciseName}".
     Inclua:
     1. Posição Inicial
@@ -365,7 +415,7 @@ export const getExerciseDetails = async (exerciseName: string) => {
 export const generateShoppingList = async (mealPlan: any) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: "gemini-flash-latest",
     contents: `Com base no plano de refeições: ${JSON.stringify(mealPlan)}, gere uma lista de compras inteligente organizada por categorias (Proteínas, Carboidratos, Gorduras, Vegetais/Frutas, Outros).
     Estime as quantidades necessárias para uma semana.
     
@@ -392,7 +442,7 @@ export const generateShoppingList = async (mealPlan: any) => {
 export const generateRouteDayPlan = async (profile: any, dietAnswers: any) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: "gemini-flash-latest",
     contents: `O usuário vai passar o dia fora de casa (Dia de Rota). Com base no perfil: ${JSON.stringify(profile)} e objetivo: ${dietAnswers.objective}, forneça sugestões de refeições práticas que podem ser encontradas em restaurantes, self-services ou lojas de conveniência, mantendo a meta calórica e de macros.
     
     Retorne os dados estritamente no formato JSON seguindo este esquema:
@@ -423,7 +473,7 @@ export const generateRouteDayPlan = async (profile: any, dietAnswers: any) => {
 export const chatWithCoach = async (message: string, context?: any) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: "gemini-flash-latest",
     contents: `Você é o motor do Shape Analyzer Pro. Sua missão é manter a interface limpa, funcional e converter o usuário para o Premium.
     Responda à dúvida do usuário de forma técnica e motivadora SEMPRE EM PORTUGUÊS DO BRASIL. 
     
@@ -441,7 +491,7 @@ export const chatWithCoach = async (message: string, context?: any) => {
 export const generateCorrectivePlan = async (analysis: any, profile: any) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: "gemini-flash-latest",
     contents: `Você é um nutricionista e treinador esportivo. Com base na análise do físico: ${JSON.stringify(analysis)} e perfil: ${JSON.stringify(profile)}, emita um PLANO CORRETIVO INTEGRADO.
     Foque especificamente em corrigir assimetrias musculares reveladas na análise.
     Retorne os dados estritamente no formato JSON seguindo este esquema:
