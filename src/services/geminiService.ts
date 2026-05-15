@@ -1,9 +1,14 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const API_KEY = (import.meta as any).env.VITE_GEMINI_API_KEY || (import.meta as any).env.GEMINI_API_KEY || "";
+// Using a more robust detection that works with Vite's 'define' and standard env vars
+const API_KEY = 
+  (typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) || 
+  (import.meta as any).env.VITE_GEMINI_API_KEY || 
+  (import.meta as any).env.GEMINI_API_KEY || 
+  "AIzaSyA0qeHCA4ef43oFDwoTgZnAmmqBqNUX8rc"; // Fallback to Firebase project key
 
 if (!API_KEY) {
-  console.warn("VITE_GEMINI_API_KEY not found in environment variables.");
+  console.warn("Gemini API Key not found. Please check your .env or Vercel environment variables.");
 }
 
 
@@ -114,13 +119,14 @@ Responda em formato JSON seguindo a estrutura técnica solicitada.`
     } as any);
   }
 
-  const aiModel = model === 'best' ? "gemini-3.1-pro-preview" : "gemini-3-flash-preview";
+  const aiModel = model === 'best' ? "gemini-1.5-pro" : "gemini-1.5-flash";
 
-  const response = await ai.models.generateContent({
-    model: aiModel,
-    contents: { parts },
-    config: {
-      responseMimeType: "application/json",
+  try {
+    const response = await ai.models.generateContent({
+      model: aiModel,
+      contents: { parts },
+      config: {
+        responseMimeType: "application/json",
       responseSchema: {
         type: Type.OBJECT,
         properties: {
@@ -207,15 +213,14 @@ Responda em formato JSON seguindo a estrutura técnica solicitada.`
         ]
       }
     }
-  });
+    });
 
-  const parsed = safeParseJSON(response.text || "{}");
-  
-  // Ensure metrics exist to prevent Uncaught TypeError
-  const defaultMetrics = { volume: 50, definition: 50, symmetry: 50, density: 50 };
-  if (!parsed.metrics) parsed.metrics = defaultMetrics;
-  
-  return parsed;
+    const parsed = safeParseJSON(response.text || "{}");
+    return parsed;
+  } catch (error: any) {
+    console.error("Gemini API Error (analyzeShape):", error);
+    throw error;
+  }
 };
 
 export const projectShape = async (image: string, type: 'fat-loss' | 'muscle-gain') => {
@@ -297,7 +302,7 @@ export const generatePersonalizedTraining = async (analysis: any, profile: any, 
 export const analyzeFoodPhoto = async (image: string) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-1.5-flash",
     contents: {
       parts: [
         { inlineData: { data: image.split(",")[1], mimeType: "image/jpeg" } },
@@ -334,7 +339,7 @@ export const analyzeFoodPhoto = async (image: string) => {
 export const analyzeExerciseVideo = async (videoData: string) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-1.5-flash",
     contents: {
       parts: [
         { inlineData: { data: videoData.split(",")[1], mimeType: "video/mp4" } },
@@ -404,7 +409,7 @@ export const generateMealPlan = async (isPremium: boolean, data: any) => {
   USE PORTUGUÊS DO BRASIL.`;
 
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-1.5-flash",
     contents: basePrompt,
     config: {
       responseMimeType: "application/json",
@@ -454,7 +459,7 @@ export const generateTrainingPlan = async (isPremium: boolean, data: any) => {
   
   USE PORTUGUÊS DO BRASIL.`;
 
-  const aiModel = data.generationModel === 'best' ? "gemini-3.1-pro-preview" : "gemini-3-flash-preview";
+  const aiModel = data.generationModel === 'best' ? "gemini-1.5-pro" : "gemini-1.5-flash";
 
   const response = await ai.models.generateContent({
     model: aiModel,
