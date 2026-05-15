@@ -1,6 +1,11 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const API_KEY = process.env.GEMINI_API_KEY || "";
+const API_KEY = (import.meta as any).env.VITE_GEMINI_API_KEY || (import.meta as any).env.GEMINI_API_KEY || "";
+
+if (!API_KEY) {
+  console.warn("VITE_GEMINI_API_KEY not found in environment variables.");
+}
+
 
 const safeParseJSON = (text: string) => {
   try {
