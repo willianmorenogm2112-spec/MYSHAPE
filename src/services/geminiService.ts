@@ -5,7 +5,7 @@ const API_KEY =
   (typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) || 
   (import.meta as any).env.VITE_GEMINI_API_KEY || 
   (import.meta as any).env.GEMINI_API_KEY || 
-  "AIzaSyA0qeHCA4ef43oFDwoTgZnAmmqBqNUX8rc"; // Fallback to Firebase project key
+  "AIzaSyAF1t8NzyiSUV82539KyCohxZMOo-SGRP8"; // Updated user API key
 
 if (!API_KEY) {
   console.warn("Gemini API Key not found. Please check your .env or Vercel environment variables.");
@@ -119,7 +119,7 @@ Responda em formato JSON seguindo a estrutura técnica solicitada.`
     } as any);
   }
 
-  const aiModel = model === 'best' ? "gemini-1.5-pro" : "gemini-1.5-flash";
+  const aiModel = model === 'best' ? "gemini-3.1-pro-preview" : "gemini-1.5-flash";
 
   try {
     const response = await ai.models.generateContent({
@@ -459,7 +459,7 @@ export const generateTrainingPlan = async (isPremium: boolean, data: any) => {
   
   USE PORTUGUÊS DO BRASIL.`;
 
-  const aiModel = data.generationModel === 'best' ? "gemini-1.5-pro" : "gemini-1.5-flash";
+  const aiModel = data.generationModel === 'best' ? "gemini-3.1-pro-preview" : "gemini-1.5-flash";
 
   const response = await ai.models.generateContent({
     model: aiModel,
