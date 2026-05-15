@@ -1,7 +1,10 @@
 {
-  "name": "Shape Analyzer AI",
-  "description": "Analise seu físico com inteligência artificial. Receba feedback sobre simetria, definição e dicas de treino baseadas no seu shape.",
+  "name": "Meu Shape - AI Evolution",
+  "description": "Plataforma de alta performance para evolução física com biometria por IA, bio-mapeamento muscular e protocolos de treino ultra-personalizados.",
   "requestFramePermissions": [
     "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]
 }

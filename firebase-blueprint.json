@@ -1,0 +1,78 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User profile and settings",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "isAdvancedMode": { "type": "boolean" },
+        "focoMuscular": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    },
+    "AnalysisResult": {
+      "title": "Analysis Result",
+      "description": "AI analysis of physical scanning",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "metrics": { "type": "object" },
+        "proportions": { "type": "object" },
+        "analysis": { "type": "object" },
+        "posture": { "type": "object" },
+        "recommendations": { "type": "object" },
+        "imageUrl": { "type": "string" }
+      },
+      "required": ["userId", "timestamp"]
+    },
+    "TrainingPlan": {
+      "title": "Training Plan",
+      "description": "The current training plan for the user",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "dias": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "dias"]
+    },
+    "WorkoutLog": {
+      "title": "Workout Log",
+      "description": "Records of completed workout sessions",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "dayName": { "type": "string" },
+        "startTime": { "type": "number" },
+        "completedAt": { "type": "number" },
+        "exercises": { "type": "array" },
+        "logs": { "type": "array" }
+      },
+      "required": ["userId", "startTime", "completedAt"]
+    }
+  },
+  "firestore": {
+    "user_data/{userId}": {
+      "schema": "User",
+      "description": "Blob of user data including profile, analysis history, and training plans"
+    },
+    "analysis_results/{resultId}": {
+      "schema": "AnalysisResult",
+      "description": "Collection of physical analysis scans"
+    },
+    "training_plans/{planId}": {
+      "schema": "TrainingPlan",
+      "description": "User specific training plans"
+    },
+    "workout_logs/{logId}": {
+      "schema": "WorkoutLog",
+      "description": "History of user workouts"
+    }
+  }
+}

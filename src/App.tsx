@@ -39,11 +39,20 @@ import {
   User,
   Mail,
   LogOut,
+  Settings,
+  ShieldCheck,
   Bell,
-  Activity
+  Activity,
+  Ruler,
+  Moon,
+  Sun,
+  ShieldAlert,
+  BarChart3
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { supabase } from "./lib/supabase";
+import { auth, db, googleProvider } from "./lib/firebase";
+import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, signInWithPopup, updateProfile } from "firebase/auth";
+import { doc, getDoc, setDoc, updateDoc } from "firebase/firestore";
 import Markdown from 'react-markdown';
 import {
   Radar,
@@ -77,7 +86,6 @@ import {
   Badge,
   WorkoutHistoryItem,
 } from "./types";
-import Markdown from "react-markdown";
 import rehypeRaw from "rehype-raw";
 import {
   LineChart,
@@ -97,6 +105,26 @@ import {
 import confetti from "canvas-confetti";
 
 export default function App() {
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    return localStorage.getItem("theme") === "dark" || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  });
+  const [isAdvancedMode, setIsAdvancedMode] = useState(() => {
+    return localStorage.getItem("advanced_mode") === "true";
+  });
+  const [focoMuscular, setFocoMuscular] = useState(() => {
+    return localStorage.getItem("foco_muscular") || "Equilibrado";
+  });
+
+  useEffect(() => {
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('theme', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('theme', 'light');
+    }
+  }, [isDarkMode]);
+
   const [user, setUser] = useState<any>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authEmail, setAuthEmail] = useState("");
@@ -105,6 +133,13 @@ export default function App() {
   const [authConfirmPassword, setAuthConfirmPassword] = useState("");
   const [isRegistering, setIsRegistering] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [showPoseInstructions, setShowPoseInstructions] = useState(false);
+
+  const getAvatar = (email?: string, name?: string) => {
+    if (!email && !name) return `https://api.dicebear.com/7.x/avataaars/svg?seed=fallback`;
+    const seed = email || name;
+    return `https://api.dicebear.com/7.x/avataaars/svg?seed=${seed}`;
+  };
 
   const [activeTab, setActiveTab] = useState<
     "analyze" | "diet" | "training" | "coach" | "profile" | "dashboard" | "recovery"
@@ -146,6 +181,7 @@ export default function App() {
     startDate: "Maio 2024",
   });
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisModel, setAnalysisModel] = useState<'fast' | 'best'>('fast');
   const [isScanning, setIsScanning] = useState(false);
   const [isProjecting, setIsProjecting] = useState(false);
   const [projectedImage, setProjectedImage] = useState<string | null>(null);
@@ -238,14 +274,43 @@ export default function App() {
     const lastWorkout = [...workoutHistory].reverse().find(w => 
       w.muscles.some((m: string) => searchNames.some(sn => m.toLowerCase().includes(sn.toLowerCase())))
     );
-    if (!lastWorkout) return { color: '#374151', status: 'Sem Dados', days: '?', text: 'text-gray-500', bg: 'bg-gray-700' };
+
+    if (!lastWorkout) return { 
+      color: 'var(--color-overlay)', 
+      status: 'Sem Dados', 
+      days: '?', 
+      text: 'text-[var(--color-text-muted)]', 
+      bg: 'bg-[var(--color-surface)]',
+      desc: 'Sem registros recentes de estímulo para este grupo muscular.'
+    };
     
-    const diffTime = Math.abs(new Date().getTime() - new Date(lastWorkout.date).getTime());
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    const diffTime = Math.abs(new Date().getTime() - new Date(lastWorkout.date.split(' ').reverse().join('-')).getTime());
+    const diffDays = Math.max(0, Math.floor(diffTime / (1000 * 60 * 60 * 24)));
     
-    if (diffDays <= 1) return { color: '#ff4444', status: 'Fadigado', days: diffDays, text: 'text-red-500', bg: 'bg-red-500' };
-    if (diffDays === 2) return { color: '#ffb800', status: 'Leve', days: diffDays, text: 'text-amber-500', bg: 'bg-amber-500' };
-    return { color: '#00ff88', status: 'Descansado', days: diffDays, text: 'text-[#00ff88]', bg: 'bg-[#00ff88]' };
+    if (diffDays <= 1) return { 
+      color: 'var(--error)', 
+      status: 'Recuperando', 
+      days: diffDays, 
+      text: 'text-[var(--error)]', 
+      bg: 'bg-[var(--error)]/20',
+      desc: 'Micro-lesões em reparo. Evite treinar este grupo hoje para maximizar a síntese proteica.'
+    };
+    if (diffDays === 2) return { 
+      color: 'var(--secondary)', 
+      status: 'Em Transição', 
+      days: diffDays, 
+      text: 'text-[var(--secondary)]', 
+      bg: 'bg-[var(--secondary)]/20',
+      desc: 'Nível moderado de fadiga residual. Treino possível, mas com volume controlado.'
+    };
+    return { 
+      color: 'var(--primary)', 
+      status: 'Pronto p/ Treino', 
+      days: diffDays, 
+      text: 'text-[var(--primary)]', 
+      bg: 'bg-[var(--primary)]/20',
+      desc: 'Recuperação total atingida. Este grupo está no pico de prontidão para novos estímulos.'
+    };
   };
 
   const handleSaveProfile = async () => {
@@ -274,6 +339,24 @@ export default function App() {
     setCheckInBf("");
   };
 
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+  const settingsAvatarInputRef = useRef<HTMLInputElement>(null);
+
+  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>, shouldSaveImmediately = false) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64 = reader.result as string;
+        setProfile((prev) => ({ ...prev, avatar: base64 }));
+        if (shouldSaveImmediately) {
+          saveData({ profile: { ...profile, avatar: base64 } });
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   const [activeAccordion, setActiveAccordion] = useState<string | null>(null);
   const [analysisFilter, setAnalysisFilter] = useState<
     "Tudo" | "Gordura" | "Simetria" | "Definição" | "Plano"
@@ -289,6 +372,7 @@ export default function App() {
     currentMass: number;
   } | null>(null);
   const [evolutionHistory, setEvolutionHistory] = useState<EvolutionEntry[]>([]);
+  const [timeFilter, setTimeFilter] = useState<'1M' | '3M' | '6M' | 'ALL'>('ALL');
 
   useEffect(() => {
     if (evolutionHistory.length >= 2) {
@@ -323,7 +407,8 @@ export default function App() {
     timePerSession: '60min',
     experienceLevel: 'INTERMEDIÁRIO',
     focusMuscle: '',
-    planName: 'Meu Plano IA'
+    planName: 'Meu Plano IA',
+    generationModel: 'fast' as 'fast' | 'best'
   });
   const [trainingFormFree, setTrainingFormFree] = useState({
     objective: '',
@@ -335,7 +420,8 @@ export default function App() {
     manualExercise: '',
     manualSeries: '',
     manualReps: '',
-    manualDay: 'Segunda'
+    manualDay: 'Segunda',
+    generationModel: 'fast' as 'fast' | 'best'
   });
   const [trainingFreeStep, setTrainingFreeStep] = useState(1);
   const [isGeneratingTraining, setIsGeneratingTraining] = useState(false);
@@ -356,6 +442,7 @@ export default function App() {
     exercises: any[];
     startTime: number;
     completedAt?: number;
+    isAdapted?: boolean;
     logs: { exerciseIndex: number, setIndex: number, reps: number, weight?: number }[];
   } | null>(null);
   const [currentExerciseIndex, setCurrentExerciseIndex] = useState(0);
@@ -366,17 +453,19 @@ export default function App() {
   const [trainingLoadingMessage, setTrainingLoadingMessage] = useState('Montando sua divisão de treino...');
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setUser(user);
       setAuthLoading(false);
+      if (user) {
+        setProfile(prev => ({
+          ...prev,
+          name: user.displayName || prev.name,
+          avatar: user.photoURL || getAvatar(user.email || undefined, user.displayName || undefined)
+        }));
+      }
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-      setAuthLoading(false);
-    });
-
-    return () => subscription.unsubscribe();
+    return () => unsubscribe();
   }, []);
 
   const handleAuth = async (e: React.FormEvent) => {
@@ -393,24 +482,13 @@ export default function App() {
           throw new Error("Por favor, insira seu nome completo.");
         }
 
-        const { error } = await supabase.auth.signUp({
-          email: authEmail,
-          password: authPassword,
-          options: {
-            data: {
-              full_name: authName,
-              display_name: authName.split(' ')[0]
-            }
-          }
+        const userCredential = await createUserWithEmailAndPassword(auth, authEmail, authPassword);
+        await updateProfile(userCredential.user, {
+          displayName: authName,
+          photoURL: getAvatar(authEmail, authName)
         });
-        if (error) throw error;
-        alert("Verifique seu e-mail para confirmar o cadastro!");
       } else {
-        const { error } = await supabase.auth.signInWithPassword({
-          email: authEmail,
-          password: authPassword,
-        });
-        if (error) throw error;
+        await signInWithEmailAndPassword(auth, authEmail, authPassword);
       }
     } catch (error: any) {
       setAuthError(error.message);
@@ -420,58 +498,38 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    await signOut(auth);
   };
 
   const handleGoogleLogin = async () => {
     setAuthError(null);
     setAuthLoading(true);
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: window.location.origin,
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',
-          },
-        }
-      });
-      if (error) throw error;
+      await signInWithPopup(auth, googleProvider);
     } catch (error: any) {
       setAuthError(error.message);
       setAuthLoading(false);
     }
   };
 
-  const syncDataWithSupabase = async (userId: string, dataToSave: any) => {
+  const syncDataWithFirebase = async (userId: string, dataToSave: any) => {
     try {
-      const { error } = await supabase
-        .from('user_data')
-        .upsert({ 
-          user_id: userId, 
-          data: dataToSave,
-          updated_at: new Date().toISOString()
-        }, { onConflict: 'user_id' });
-      
-      if (error) throw error;
+      await setDoc(doc(db, 'user_data', userId), {
+        data: dataToSave,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
     } catch (e) {
-      console.error("Erro ao sincronizar com Supabase:", e);
+      console.error("Erro ao sincronizar com Firebase:", e);
     }
   };
 
-  const loadDataFromSupabase = async (userId: string) => {
+  const loadDataFromFirebase = async (userId: string) => {
     try {
-      const { data, error } = await supabase
-        .from('user_data')
-        .select('data')
-        .eq('user_id', userId)
-        .single();
+      const docRef = doc(db, 'user_data', userId);
+      const docSnap = await getDoc(docRef);
       
-      if (error && error.code !== 'PGRST116') throw error; // PGRST116 is empty result
-      
-      if (data?.data) {
-        const cloudData = data.data;
+      if (docSnap.exists()) {
+        const cloudData = docSnap.data().data;
         setProfile(cloudData.profile || profile);
         setAnalysisCount(cloudData.analysisCount || 0);
         setWaterIntake(cloudData.waterIntake || 0);
@@ -494,17 +552,16 @@ export default function App() {
           setTrainingDayIndex(cloudData.trainingDayIndex);
         }
         
-        // Also update local storage to keep sync
         localStorage.setItem("shape_analyzer_data", JSON.stringify(cloudData));
       }
     } catch (e) {
-      console.error("Erro ao carregar dados do Supabase:", e);
+      console.error("Erro ao carregar dados do Firebase:", e);
     }
   };
 
   useEffect(() => {
     if (user) {
-      loadDataFromSupabase(user.id);
+      loadDataFromFirebase(user.uid);
     }
   }, [user]);
 
@@ -532,11 +589,10 @@ export default function App() {
       ...overrides
     };
 
-    
     localStorage.setItem("shape_analyzer_data", JSON.stringify(data));
     
     if (user) {
-      await syncDataWithSupabase(user.id, data);
+      await syncDataWithFirebase(user.uid, data);
     }
   };
 
@@ -621,11 +677,45 @@ export default function App() {
   }, [isWorkoutActive, workoutStatus, restTimeLeft]);
 
   const startWorkout = (day: any) => {
+    // Bio-Mapeamento Adaptativo: Check for fatigue
+    const fatiguedMuscles = day.exercicios.reduce((acc: string[], ex: any) => {
+        const muscle = ex.musculo_foco || '';
+        const status = getMuscleStatus(muscle);
+        if (typeof status.days === 'number' && status.days <= 1 && !acc.includes(muscle)) {
+            acc.push(muscle);
+        }
+        return acc;
+    }, []);
+
+    if (fatiguedMuscles.length > 0 || analysisHistory[0]?.posture?.detected) {
+        let warning = "";
+        if (fatiguedMuscles.length > 0) {
+            warning += `BIO-ALERTA: Os grupos [${fatiguedMuscles.join(', ')}] ainda estão em fase de reparo biológico intenso.\n`;
+        }
+        if (analysisHistory[0]?.posture?.detected) {
+            warning += `CORREÇÃO POSTURAL: Detectamos [${analysisHistory[0].posture.issue}]. Injetando protocolo corretivo: ${analysisHistory[0].posture.corrective_exercise.nome}.\n`;
+        }
+        
+        if (!confirm(`${warning}\nProsseguir com as adaptações de segurança?`)) {
+            return;
+        }
+    }
+
+    const baseExercises = [...day.exercicios];
+    // Inject corrective exercise if needed
+    if (analysisHistory[0]?.posture?.detected) {
+        baseExercises.unshift({
+            ...analysisHistory[0].posture.corrective_exercise,
+            musculo_foco: 'Postura'
+        });
+    }
+
     setActiveWorkoutSession({
       dayName: day.nome_dia || day.musculo_foco,
-      exercises: day.exercicios,
+      exercises: baseExercises,
       startTime: Date.now(),
-      logs: []
+      logs: [],
+      isAdapted: fatiguedMuscles.length > 0 || !!analysisHistory[0]?.posture?.detected
     });
     setIsWorkoutActive(true);
     setCurrentExerciseIndex(0);
@@ -710,7 +800,7 @@ export default function App() {
       particleCount: 150,
       spread: 70,
       origin: { y: 0.6 },
-      colors: ['#00ff88', '#ffffff', '#00cc6a']
+      colors: ['#2563eb', '#ffffff', '#1d4ed8']
     });
     
     playBeep(440, 0.1);
@@ -751,7 +841,7 @@ export default function App() {
             <button
               key={i}
               onClick={() => handleShowExerciseDetail(value)}
-              className="w-full py-3 bg-[#00ff88]/10 border border-emerald-500/30 text-emerald-500 rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-emerald-500 hover:text-black transition-all flex items-center justify-center gap-2 my-4"
+              className="w-full py-3 bg-[#2563eb]/10 border border-blue-600/30 text-blue-600 rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-blue-600 hover:text-white transition-all flex items-center justify-center gap-2 my-4"
             >
               <Dumbbell className="w-4 h-4" /> Ver Biomecânica: {value}
             </button>
@@ -762,7 +852,7 @@ export default function App() {
             <button
               key={i}
               onClick={() => handleSwapFood(value)}
-              className="w-full py-3 bg-orange-500/10 border border-orange-500/30 text-orange-500 rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-orange-500 hover:text-black transition-all flex items-center justify-center gap-2 my-4"
+              className="w-full py-3 bg-orange-500/10 border border-orange-500/30 text-orange-500 rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-orange-500 hover:text-white transition-all flex items-center justify-center gap-2 my-4"
             >
               <RefreshCw className="w-4 h-4" /> Trocar Alimento: {value}
             </button>
@@ -773,7 +863,7 @@ export default function App() {
             <button
               key={i}
               onClick={handleFinishWorkout}
-              className="w-full py-4 bg-emerald-500 text-black font-black uppercase tracking-widest rounded-2xl shadow-lg hover:scale-[1.02] transition-all flex items-center justify-center gap-3 my-6"
+              className="w-full py-4 bg-blue-600 text-white font-black uppercase tracking-widest rounded-2xl shadow-lg hover:scale-[1.02] transition-all flex items-center justify-center gap-3 my-6"
             >
               <Trophy className="w-6 h-6" /> Concluir Treino de Hoje
             </button>
@@ -1200,8 +1290,16 @@ export default function App() {
     try {
       const data = await analyzeShape(
         images,
-        { weight: profile.weight, goal: profile.goal },
+        { 
+          weight: profile.weight, 
+          height: profile.height, 
+          goal: profile.goal, 
+          age: profile.age, 
+          gender: profile.gender, 
+          gymLevel: profile.gymLevel 
+        },
         isPumpMode,
+        analysisModel
       );
       setResult(data);
       setAnalysisCount((prev) => prev + 1);
@@ -1210,27 +1308,36 @@ export default function App() {
         ...data,
         id: Math.random().toString(36).substr(2, 9),
         date: new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' }),
+        timestamp: Date.now(),
         category: data.overallScore >= 90 ? 'Elite' : data.overallScore >= 75 ? 'Atlético' : data.overallScore >= 60 ? 'Fitness' : 'Iniciante',
         frontPhoto: images.front
       };
-      setAnalysisHistory(prev => [newAnalysisHistoryItem, ...prev]);
+      setAnalysisHistory(prev => {
+        const newHistory = [newAnalysisHistoryItem, ...prev];
+        saveData({ analysisHistory: newHistory });
+        return newHistory;
+      });
 
       // Update evolution history
       const today = new Date().toLocaleDateString("pt-BR", { month: "short" });
-      setEvolutionHistory((prev) => [
-        ...prev,
-        {
-          date: today,
-          score: data.overallScore,
-          bf: data.bfEstimate,
-          weight: profile.weight,
-          volume: data.metrics.volume,
-          definition: data.metrics.definition,
-          symmetry: data.metrics.symmetry,
-          consistency: 0,
-          photo: images.front,
-        },
-      ]);
+      setEvolutionHistory((prev) => {
+        const newEvolution = [
+          ...prev,
+          {
+            date: today,
+            score: data.overallScore,
+            bf: data.bfEstimate,
+            weight: profile.weight,
+            volume: data.metrics.volume,
+            definition: data.metrics.definition,
+            symmetry: data.metrics.symmetry,
+            consistency: 0,
+            photo: images.front,
+          },
+        ];
+        saveData({ evolutionHistory: newEvolution });
+        return newEvolution;
+      });
     } catch (err) {
       console.error(err);
       setError(
@@ -1297,6 +1404,83 @@ export default function App() {
       ]
     : [];
 
+  const PoseInstructionsModal = () => (
+    <AnimatePresence>
+      {showPoseInstructions && (
+        <div className="fixed inset-0 z-[100] flex items-end justify-center px-4 pb-4">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowPoseInstructions(false)}
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+          />
+          <motion.div 
+            initial={{ y: "100%" }}
+            animate={{ y: 0 }}
+            exit={{ y: "100%" }}
+            className="relative w-full max-w-[360px] bg-[var(--color-bg)] rounded-[32px] overflow-hidden border border-[var(--color-border)] shadow-2xl"
+          >
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-xl font-black text-white uppercase italic tracking-wider">GUIA DE POSES</h3>
+                <button 
+                  onClick={() => setShowPoseInstructions(false)}
+                  className="w-8 h-8 rounded-full bg-[var(--color-surface)] flex items-center justify-center text-[var(--color-text-muted)]"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="space-y-6">
+                <div className="flex gap-4">
+                  <div className="w-12 h-12 bg-[var(--primary)]/10 rounded-xl flex items-center justify-center text-[var(--primary)] shrink-0 border border-[var(--primary)]/20">
+                    <Check className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h4 className="text-[12px] font-black text-white uppercase mb-1">POSIÇÃO</h4>
+                    <p className="text-[10px] text-[var(--color-text-muted)] leading-relaxed">Fique em pé, com as pernas levemente afastadas e braços relaxados ao lado do corpo.</p>
+                  </div>
+                </div>
+
+                <div className="flex gap-4">
+                  <div className="w-12 h-12 bg-[var(--primary)]/10 rounded-xl flex items-center justify-center text-[var(--primary)] shrink-0 border border-[var(--primary)]/20">
+                    <Sun className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h4 className="text-[12px] font-black text-white uppercase mb-1">ILUMINAÇÃO</h4>
+                    <p className="text-[10px] text-[var(--color-text-muted)] leading-relaxed">Procure um local bem iluminado, de preferência com luz frontal para evitar sombras profundas.</p>
+                  </div>
+                </div>
+
+                <div className="flex gap-4">
+                  <div className="w-12 h-12 bg-[var(--primary)]/10 rounded-xl flex items-center justify-center text-[var(--primary)] shrink-0 border border-[var(--primary)]/20">
+                    <Box className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h4 className="text-[12px] font-black text-white uppercase mb-1">ENQUADRAMENTO</h4>
+                    <p className="text-[10px] text-[var(--color-text-muted)] leading-relaxed">O corpo deve estar centralizado na foto, da cabeça aos joelhos (ou pés).</p>
+                  </div>
+                </div>
+
+                <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-2xl">
+                  <p className="text-[10px] text-amber-500 font-bold text-center">Para melhores resultados, use roupas de treino justas ou roupa íntima.</p>
+                </div>
+              </div>
+
+              <button 
+                onClick={() => setShowPoseInstructions(false)}
+                className="w-full bg-[var(--primary)] text-[var(--on-primary)] font-black uppercase py-4 rounded-xl shadow-lg mt-8 active:scale-95 transition-all text-[12px] tracking-widest"
+              >
+                ENTENDI, VAMOS LÁ
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+
   const PremiumModal = () => (
     <AnimatePresence>
       {showPremiumModal && (
@@ -1309,25 +1493,25 @@ export default function App() {
           <motion.div
             initial={{ scale: 0.9, y: 20 }}
             animate={{ scale: 1, y: 0 }}
-            className="bg-[#111112] border-2 border-emerald-500/50 rounded-3xl p-6 md:p-8 max-w-md w-full relative overflow-hidden shadow-[0_0_60px_rgba(16,185,129,0.2)]"
+            className="bg-[var(--color-surface)] shadow-xl border-2 border-blue-600/50 rounded-3xl p-6 md:p-8 max-w-md w-full relative overflow-hidden shadow-[0_0_60px_rgba(0,0,0,0.1)]"
           >
             {/* Background Glow */}
-            <div className="absolute -top-24 -right-24 w-48 h-48 bg-emerald-500/10 blur-[100px]" />
+            <div className="absolute -top-24 -right-24 w-48 h-48 bg-blue-600/10 blur-[100px]" />
             <div className="absolute -bottom-24 -left-24 w-48 h-48 bg-orange-500/10 blur-[100px]" />
 
             <div className="relative z-10">
               <div className="flex justify-between items-start mb-6">
                 <div>
-                  <h2 className="text-3xl font-bold text-white mb-1">
-                    Padrão <span className="text-[#00cc6a] italic">Ouro</span>
+                  <h2 className="text-3xl font-bold text-[var(--color-text)] mb-1">
+                    Padrão <span className="text-[#1d4ed8] italic">Ouro</span>
                   </h2>
-                  <p className="text-[#6b7280] text-sm">
+                  <p className="text-[var(--color-text-muted)] text-sm">
                     Desbloqueie o potencial máximo do seu shape.
                   </p>
                 </div>
                 <button
                   onClick={() => setShowPremiumModal(false)}
-                  className="close-button p-2 hover:bg-white/5 rounded-full transition-colors"
+                  className="close-button p-2 hover:bg-[var(--color-overlay)] rounded-full transition-colors"
                 >
                   <X className="w-6 h-6 text-zinc-500" />
                 </button>
@@ -1336,7 +1520,7 @@ export default function App() {
               <div className="space-y-4 mb-8">
                 {[
                   {
-                    icon: <Zap className="w-5 h-5 text-emerald-400" />,
+                    icon: <Zap className="w-5 h-5 text-blue-500" />,
                     title: "Análises Ilimitadas",
                     desc: "Sem limites de 3 fotos por mês.",
                   },
@@ -1346,7 +1530,7 @@ export default function App() {
                     desc: "Respostas instantâneas e profundas.",
                   },
                   {
-                    icon: <Sparkles className="w-5 h-5 text-emerald-400" />,
+                    icon: <Sparkles className="w-5 h-5 text-blue-500" />,
                     title: "Projeção de Futuro",
                     desc: "Veja seu shape com 5% de BF.",
                   },
@@ -1356,20 +1540,20 @@ export default function App() {
                     desc: "Análise de vídeo dos seus treinos.",
                   },
                   {
-                    icon: <Box className="w-5 h-5 text-emerald-400" />,
+                    icon: <Box className="w-5 h-5 text-blue-500" />,
                     title: "Rota Ativa",
                     desc: "Ajustes diários na sua dieta e treino.",
                   },
                 ].map((item, i) => (
                   <div
                     key={i}
-                    className="flex items-start gap-4 p-3.5 rounded-2xl bg-white/5 border border-white/5 hover:border-emerald-500/40 transition-all group"
+                    className="flex items-start gap-4 p-3.5 rounded-2xl bg-[var(--color-overlay)] border border-[var(--color-border-subtle)] hover:border-blue-600/40 transition-all group"
                   >
                     <div className="mt-1 group-hover:scale-110 transition-transform">
                       {item.icon}
                     </div>
                     <div>
-                      <h4 className="text-white font-bold text-sm">
+                      <h4 className="text-[var(--color-text)] font-bold text-sm">
                         {item.title}
                       </h4>
                       <p className="text-zinc-500 text-[11px] leading-relaxed">
@@ -1391,15 +1575,15 @@ export default function App() {
                     );
                     setShowPremiumModal(false);
                   }}
-                  className="p-4 rounded-2xl bg-white/5 border border-emerald-500/30 hover:bg-emerald-500/10 transition-all text-left group"
+                  className="p-4 rounded-2xl bg-[var(--color-overlay)] border border-blue-600/30 hover:bg-blue-600/10 transition-all text-left group"
                 >
                   <span className="text-zinc-400 text-xs block mb-1">
                     Mensal
                   </span>
-                  <span className="text-white font-bold text-lg block">
+                  <span className="text-[var(--color-text)] font-bold text-lg block">
                     R$ 29,90
                   </span>
-                  <span className="text-emerald-400 text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">
+                  <span className="text-blue-500 text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">
                     Selecionar →
                   </span>
                 </button>
@@ -1409,18 +1593,18 @@ export default function App() {
                     setSubscriptionExpiryDate(null); // Lifetime
                     setShowPremiumModal(false);
                   }}
-                  className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500 text-left relative overflow-hidden group"
+                  className="p-4 rounded-2xl bg-blue-600/10 border border-blue-600 text-left relative overflow-hidden group"
                 >
-                  <div className="absolute top-0 right-0 bg-emerald-500 text-[8px] font-bold px-2 py-0.5 rounded-bl-lg">
+                  <div className="absolute top-0 right-0 bg-blue-600 text-[8px] font-bold px-2 py-0.5 rounded-bl-lg">
                     VITALÍCIO
                   </div>
                   <span className="text-zinc-400 text-xs block mb-1">
                     Pagamento Único
                   </span>
-                  <span className="text-white font-bold text-lg block">
+                  <span className="text-[var(--color-text)] font-bold text-lg block">
                     R$ 197,00
                   </span>
-                  <span className="text-emerald-400 text-[10px]">
+                  <span className="text-blue-500 text-[10px]">
                     Melhor Valor
                   </span>
                 </button>
@@ -1436,7 +1620,7 @@ export default function App() {
                   );
                   setShowPremiumModal(false);
                 }}
-                className="w-full py-4 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-sm transition-all shadow-[0_0_20px_rgba(16,185,129,0.4)] active:scale-95"
+                className="w-full py-4 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm transition-all shadow-[0_0_20px_rgba(37,99,235,0.3)] active:scale-95"
               >
                 QUERO MEU SHAPE DE ELITE
               </button>
@@ -1462,16 +1646,16 @@ export default function App() {
           <motion.div
             initial={{ scale: 0.9, y: 20 }}
             animate={{ scale: 1, y: 0 }}
-            className="bg-[#111112] border border-emerald-500/30 rounded-3xl p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto"
+            className="bg-[var(--color-surface)] shadow-xl border border-blue-600/30 rounded-3xl p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto"
           >
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-black italic uppercase tracking-tighter flex items-center gap-2">
-                <Box className="w-6 h-6 text-emerald-500" /> Lista de Compras
+                <Box className="w-6 h-6 text-blue-600" /> Lista de Compras
                 Inteligente
               </h2>
               <button
                 onClick={() => setShowShoppingListModal(false)}
-                className="close-button p-2 hover:bg-white/5 rounded-full transition-colors"
+                className="close-button p-2 hover:bg-[var(--color-overlay)] rounded-full transition-colors"
               >
                 <X className="w-6 h-6 text-zinc-500" />
               </button>
@@ -1480,19 +1664,19 @@ export default function App() {
             <div className="grid md:grid-cols-2 gap-6">
               {shoppingList.categories.map((cat: any, i: number) => (
                 <div key={i} className="space-y-3">
-                  <h3 className="text-xs font-black uppercase tracking-widest text-emerald-500 bg-emerald-500/10 px-3 py-1 rounded-lg inline-block">
+                  <h3 className="text-xs font-black uppercase tracking-widest text-blue-600 bg-blue-600/10 px-3 py-1 rounded-lg inline-block">
                     {cat.name}
                   </h3>
                   <div className="space-y-2">
                     {cat.items.map((item: any, j: number) => (
                       <div
                         key={j}
-                        className="flex justify-between items-center p-3 rounded-xl bg-white/5 border border-white/5"
+                        className="flex justify-between items-center p-3 rounded-xl bg-[var(--color-overlay)] border border-[var(--color-border-subtle)]"
                       >
-                        <span className="text-sm text-white/80">
+                        <span className="text-sm text-[var(--color-text)]/80">
                           {item.name}
                         </span>
-                        <span className="text-xs font-bold text-emerald-500">
+                        <span className="text-xs font-bold text-blue-600">
                           {item.amount}
                         </span>
                       </div>
@@ -1519,7 +1703,7 @@ export default function App() {
           <motion.div
             initial={{ scale: 0.9, y: 20 }}
             animate={{ scale: 1, y: 0 }}
-            className="bg-[#111112] border border-orange-500/30 rounded-3xl p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto"
+            className="bg-[var(--color-surface)] shadow-xl border border-orange-500/30 rounded-3xl p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto"
           >
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-black italic uppercase tracking-tighter flex items-center gap-2">
@@ -1528,7 +1712,7 @@ export default function App() {
               </h2>
               <button
                 onClick={() => setShowRouteDayModal(false)}
-                className="close-button p-2 hover:bg-white/5 rounded-full transition-colors"
+                className="close-button p-2 hover:bg-[var(--color-overlay)] rounded-full transition-colors"
               >
                 <X className="w-6 h-6 text-zinc-500" />
               </button>
@@ -1538,20 +1722,20 @@ export default function App() {
               {routeDayPlan.suggestions.map((s: any, i: number) => (
                 <div
                   key={i}
-                  className="p-5 rounded-2xl bg-white/5 border border-white/5 space-y-3"
+                  className="p-5 rounded-2xl bg-[var(--color-overlay)] border border-[var(--color-border-subtle)] space-y-3"
                 >
                   <div className="flex justify-between items-center">
                     <span className="text-[10px] font-black uppercase tracking-widest text-orange-500">
                       {s.meal}
                     </span>
-                    <span className="text-xs font-bold text-white/40">
+                    <span className="text-xs font-bold text-[var(--color-text)]/40">
                       {s.place}
                     </span>
                   </div>
-                  <h4 className="text-lg font-bold text-white">{s.choice}</h4>
+                  <h4 className="text-lg font-bold text-[var(--color-text)]">{s.choice}</h4>
                   <div className="p-3 rounded-xl bg-orange-500/5 border border-orange-500/10 flex items-start gap-3">
                     <Info className="w-4 h-4 text-orange-500 shrink-0 mt-0.5" />
-                    <p className="text-xs text-white/60 italic">{s.tip}</p>
+                    <p className="text-xs text-[var(--color-text)]/60 italic">{s.tip}</p>
                   </div>
                 </div>
               ))}
@@ -1574,15 +1758,15 @@ export default function App() {
           <motion.div
             initial={{ scale: 0.9, y: 20 }}
             animate={{ scale: 1, y: 0 }}
-            className="bg-[#111112] border border-emerald-500/30 rounded-3xl p-6 max-w-md w-full"
+            className="bg-[var(--color-surface)] shadow-xl border border-blue-600/30 rounded-3xl p-6 max-w-md w-full"
           >
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-black italic uppercase tracking-tighter flex items-center gap-2">
-                <Zap className="w-6 h-6 text-emerald-500" /> Análise de Prato
+                <Zap className="w-6 h-6 text-blue-600" /> Análise de Prato
               </h2>
               <button
                 onClick={() => setFoodAnalysis(null)}
-                className="close-button p-2 hover:bg-white/5 rounded-full transition-colors"
+                className="close-button p-2 hover:bg-[var(--color-overlay)] rounded-full transition-colors"
               >
                 <X className="w-6 h-6 text-zinc-500" />
               </button>
@@ -1594,7 +1778,7 @@ export default function App() {
                   {
                     label: "Cal",
                     val: foodAnalysis.totalMacros.calories,
-                    color: "text-emerald-500",
+                    color: "text-blue-600",
                   },
                   {
                     label: "Prot",
@@ -1614,9 +1798,9 @@ export default function App() {
                 ].map((m, i) => (
                   <div
                     key={i}
-                    className="p-3 rounded-xl bg-white/5 border border-white/5 text-center"
+                    className="p-3 rounded-xl bg-[var(--color-overlay)] border border-[var(--color-border-subtle)] text-center"
                   >
-                    <p className="text-[8px] font-black uppercase tracking-widest text-white/40 mb-1">
+                    <p className="text-[8px] font-black uppercase tracking-widest text-[var(--color-text)]/40 mb-1">
                       {m.label}
                     </p>
                     <p className={`text-sm font-black ${m.color}`}>{m.val}</p>
@@ -1625,18 +1809,18 @@ export default function App() {
               </div>
 
               <div className="space-y-2">
-                <h4 className="text-[10px] font-black uppercase tracking-widest text-white/40">
+                <h4 className="text-[10px] font-black uppercase tracking-widest text-[var(--color-text)]/40">
                   Itens Identificados
                 </h4>
                 {foodAnalysis.items.map((item: any, i: number) => (
                   <div
                     key={i}
-                    className="flex justify-between items-center p-3 rounded-xl bg-white/5 border border-white/5"
+                    className="flex justify-between items-center p-3 rounded-xl bg-[var(--color-overlay)] border border-[var(--color-border-subtle)]"
                   >
-                    <span className="text-sm text-white/80">
+                    <span className="text-sm text-[var(--color-text)]/80">
                       {item.name} ({item.estimatedWeight}g)
                     </span>
-                    <span className="text-xs font-bold text-emerald-500">
+                    <span className="text-xs font-bold text-blue-600">
                       {item.calories} kcal
                     </span>
                   </div>
@@ -1645,7 +1829,7 @@ export default function App() {
 
               <button
                 onClick={() => setFoodAnalysis(null)}
-                className="w-full py-4 bg-emerald-500 text-black font-black uppercase tracking-widest rounded-2xl hover:bg-emerald-400 transition-all"
+                className="w-full py-4 bg-blue-600 text-white font-black uppercase tracking-widest rounded-2xl hover:bg-blue-500 transition-all"
               >
                 Adicionar ao Dia de Hoje
               </button>
@@ -1668,7 +1852,7 @@ export default function App() {
           <motion.div
             initial={{ scale: 0.9, y: 20 }}
             animate={{ scale: 1, y: 0 }}
-            className="bg-[#111112] border border-blue-500/30 rounded-3xl p-6 max-w-md w-full"
+            className="bg-[var(--color-surface)] shadow-xl border border-blue-500/30 rounded-3xl p-6 max-w-md w-full"
           >
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-black italic uppercase tracking-tighter flex items-center gap-2">
@@ -1676,7 +1860,7 @@ export default function App() {
               </h2>
               <button
                 onClick={() => setExerciseAnalysis(null)}
-                className="close-button p-2 hover:bg-white/5 rounded-full transition-colors"
+                className="close-button p-2 hover:bg-[var(--color-overlay)] rounded-full transition-colors"
               >
                 <X className="w-6 h-6 text-zinc-500" />
               </button>
@@ -1710,7 +1894,7 @@ export default function App() {
                   {exerciseAnalysis.errors.map((error: string, i: number) => (
                     <div
                       key={i}
-                      className="p-3 rounded-xl bg-red-500/5 border border-red-500/10 text-xs text-white/80"
+                      className="p-3 rounded-xl bg-red-500/5 border border-red-500/10 text-xs text-[var(--color-text)]/80"
                     >
                       • {error}
                     </div>
@@ -1719,7 +1903,7 @@ export default function App() {
               </div>
 
               <div className="space-y-3">
-                <h4 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 flex items-center gap-1">
+                <h4 className="text-[10px] font-black uppercase tracking-widest text-blue-500 flex items-center gap-1">
                   <Check className="w-3 h-3" /> Correções Necessárias
                 </h4>
                 <div className="space-y-2">
@@ -1727,7 +1911,7 @@ export default function App() {
                     (correction: string, i: number) => (
                       <div
                         key={i}
-                        className="p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/10 text-xs text-white/80"
+                        className="p-3 rounded-xl bg-blue-600/5 border border-blue-600/10 text-xs text-[var(--color-text)]/80"
                       >
                         • {correction}
                       </div>
@@ -1736,7 +1920,7 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="p-4 rounded-2xl bg-white/5 border border-white/5 italic text-xs text-white/60 leading-relaxed">
+              <div className="p-4 rounded-2xl bg-[var(--color-overlay)] border border-[var(--color-border-subtle)] italic text-xs text-[var(--color-text)]/60 leading-relaxed">
                 {exerciseAnalysis.summary}
               </div>
             </div>
@@ -1748,27 +1932,27 @@ export default function App() {
 
   if (authLoading) {
     return (
-      <div className="min-h-screen bg-[#030508] flex items-center justify-center text-[#f0f0f0]">
-        <RefreshCw className="w-8 h-8 text-[#00ff88] animate-spin" />
+      <div className="min-h-screen bg-[var(--color-bg)] flex items-center justify-center text-[var(--color-text)]">
+        <RefreshCw className="w-8 h-8 text-[#2563eb] animate-spin" />
       </div>
     );
   }
 
   if (!user) {
     return (
-      <div className="min-h-screen bg-[#030508] flex justify-center text-[#f0f0f0] font-sans selection:bg-[#00ff88]/30">
-        <div className="w-full max-w-[390px] bg-[#080c10] min-h-screen relative flex flex-col items-center justify-center p-6">
+      <div className="min-h-screen bg-[var(--color-bg)] flex justify-center text-[var(--color-text)] font-sans selection:bg-[#2563eb]/30">
+        <div className="w-full max-w-[390px] bg-[var(--color-bg)] min-h-screen relative flex flex-col items-center justify-center p-6">
           <div className="w-full space-y-8 animate-fade-in-up">
             <div className="text-center space-y-2">
               <div className="flex justify-center mb-4">
-                <div className="w-16 h-16 rounded-[24px] bg-[#00ff88]/10 flex items-center justify-center border border-[#00ff88]/20 shadow-[0_0_30px_rgba(0,255,136,0.1)]">
-                  <Zap className="w-8 h-8 text-[#00ff88] fill-current" />
+                <div className="w-16 h-16 rounded-[24px] bg-[#2563eb]/10 flex items-center justify-center border border-[#2563eb]/20 shadow-[0_0_30px_rgba(0,255,136,0.1)]">
+                  <Zap className="w-8 h-8 text-[#2563eb] fill-current" />
                 </div>
               </div>
-              <h1 className="text-[28px] font-display font-bold text-white uppercase tracking-tight">
+              <h1 className="text-[28px] font-display font-bold text-[var(--color-text)] uppercase tracking-tight">
                 {isRegistering ? "Criar Conta" : "Bem-vindo"}
               </h1>
-              <p className="text-[#6b7280] text-[14px]">
+              <p className="text-[var(--color-text-muted)] text-[14px]">
                 {isRegistering 
                   ? "Comece sua jornada para o shape inexplicável." 
                   : "Entre para continuar evoluindo seu físico."}
@@ -1776,6 +1960,30 @@ export default function App() {
             </div>
 
             <form onSubmit={handleAuth} className="space-y-4">
+              {/* Google Button at the top */}
+              <button 
+                onClick={handleGoogleLogin}
+                type="button"
+                className="w-full h-14 bg-[var(--color-surface)] text-[#3c4043] font-bold rounded-2xl flex items-center justify-center gap-3 hover:bg-gray-100 transition-all shadow-md active:scale-[0.98] mb-6"
+              >
+                <svg className="w-5 h-5" viewBox="0 0 24 24">
+                  <path fill="#EA4335" d="M5.266 9.765A7.077 7.077 0 0 1 12 4.909c1.69 0 3.218.6 4.418 1.582L19.91 3C17.782 1.145 15.055 0 12 0 7.27 0 3.198 2.698 1.24 6.65l4.026 3.115z" />
+                  <path fill="#FBBC05" d="M16.04 18.013c-1.09.363-2.26.56-3.414.56a7.077 7.077 0 0 1-7.36-4.909L1.24 16.78a11.965 11.965 0 0 0 10.76 7.22c3.136 0 6.002-1.036 8.243-2.782l-4.203-3.205z" />
+                  <path fill="#4285F4" d="M23.714 12.218c0-.838-.077-1.643-.21-2.422H12v4.582h6.573c-.282 1.486-1.123 2.741-2.382 3.586l4.203 3.205c2.454-2.264 3.868-5.591 3.868-9.364l-.55-.585z" />
+                  <path fill="#34A853" d="M5.266 14.235a7.077 7.077 0 0 1 0-4.47L1.24 6.65a11.965 11.965 0 0 0 0 10.7c1.442-2.923 4.026-3.115 4.026-3.115z" />
+                </svg>
+                Continuar com o Google
+              </button>
+
+              <div className="relative mb-6">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-[var(--color-border)]"></div>
+                </div>
+                <div className="relative flex justify-center text-[10px] uppercase font-bold tracking-widest">
+                  <span className="bg-[var(--color-bg)] px-3 text-[var(--color-text-muted)]">Ou use seu email</span>
+                </div>
+              </div>
+
               <AnimatePresence mode="wait">
                 {isRegistering && (
                   <motion.div 
@@ -1784,15 +1992,15 @@ export default function App() {
                     exit={{ opacity: 0, height: 0 }}
                     className="space-y-1.5 overflow-hidden"
                   >
-                    <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest ml-1">Nome Completo</label>
+                    <label className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest ml-1">Nome Completo</label>
                     <div className="relative">
-                      <User className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[#6b7280]" />
+                      <User className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[var(--color-text-muted)]" />
                       <input 
                         type="text"
                         required
                         value={authName}
                         onChange={(e) => setAuthName(e.target.value)}
-                        className="w-full h-14 bg-white/5 border border-white/5 rounded-2xl pl-12 pr-4 text-white focus:border-[#00ff88]/30 focus:bg-white/10 outline-none transition-all placeholder:text-[#3a3a3a]"
+                        className="w-full h-14 bg-[var(--color-overlay)] border border-[var(--color-border-subtle)] rounded-2xl pl-12 pr-4 text-[var(--color-text)] focus:border-[#2563eb]/30 focus:bg-[var(--color-border)] outline-none transition-all placeholder:text-[#3a3a3a]"
                         placeholder="Ex: João Silva"
                       />
                     </div>
@@ -1801,30 +2009,30 @@ export default function App() {
               </AnimatePresence>
 
               <div className="space-y-1.5">
-                <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest ml-1">E-mail</label>
+                <label className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest ml-1">E-mail</label>
                 <div className="relative">
-                  <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[#6b7280]" />
+                  <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[var(--color-text-muted)]" />
                   <input 
                     type="email"
                     required
                     value={authEmail}
                     onChange={(e) => setAuthEmail(e.target.value)}
-                    className="w-full h-14 bg-white/5 border border-white/5 rounded-2xl pl-12 pr-4 text-white focus:border-[#00ff88]/30 focus:bg-white/10 outline-none transition-all placeholder:text-[#3a3a3a]"
+                    className="w-full h-14 bg-[var(--color-overlay)] border border-[var(--color-border-subtle)] rounded-2xl pl-12 pr-4 text-[var(--color-text)] focus:border-[#2563eb]/30 focus:bg-[var(--color-border)] outline-none transition-all placeholder:text-[#3a3a3a]"
                     placeholder="seu@email.com"
                   />
                 </div>
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest ml-1">Senha</label>
+                <label className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest ml-1">Senha</label>
                 <div className="relative">
-                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[#6b7280]" />
+                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[var(--color-text-muted)]" />
                   <input 
                     type="password"
                     required
                     value={authPassword}
                     onChange={(e) => setAuthPassword(e.target.value)}
-                    className="w-full h-14 bg-white/5 border border-white/5 rounded-2xl pl-12 pr-4 text-white focus:border-[#00ff88]/30 focus:bg-white/10 outline-none transition-all placeholder:text-[#3a3a3a]"
+                    className="w-full h-14 bg-[var(--color-overlay)] border border-[var(--color-border-subtle)] rounded-2xl pl-12 pr-4 text-[var(--color-text)] focus:border-[#2563eb]/30 focus:bg-[var(--color-border)] outline-none transition-all placeholder:text-[#3a3a3a]"
                     placeholder="••••••••"
                   />
                 </div>
@@ -1838,15 +2046,15 @@ export default function App() {
                     exit={{ opacity: 0, height: 0 }}
                     className="space-y-1.5 overflow-hidden"
                   >
-                    <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest ml-1">Confirmar Senha</label>
+                    <label className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest ml-1">Confirmar Senha</label>
                     <div className="relative">
-                      <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[#6b7280]" />
+                      <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[var(--color-text-muted)]" />
                       <input 
                         type="password"
                         required
                         value={authConfirmPassword}
                         onChange={(e) => setAuthConfirmPassword(e.target.value)}
-                        className="w-full h-14 bg-white/5 border border-white/5 rounded-2xl pl-12 pr-4 text-white focus:border-[#00ff88]/30 focus:bg-white/10 outline-none transition-all placeholder:text-[#3a3a3a]"
+                        className="w-full h-14 bg-[var(--color-overlay)] border border-[var(--color-border-subtle)] rounded-2xl pl-12 pr-4 text-[var(--color-text)] focus:border-[#2563eb]/30 focus:bg-[var(--color-border)] outline-none transition-all placeholder:text-[#3a3a3a]"
                         placeholder="••••••••"
                       />
                     </div>
@@ -1867,7 +2075,7 @@ export default function App() {
               <button 
                 type="submit"
                 disabled={authLoading}
-                className="w-full h-14 bg-[#00ff88] text-[#050505] font-black uppercase tracking-widest rounded-2xl shadow-[0_10px_30px_rgba(0,255,136,0.2)] active:scale-[0.98] transition-all flex items-center justify-center gap-2 group"
+                className="w-full h-14 bg-[#2563eb] text-[#ffffff] font-black uppercase tracking-widest rounded-2xl shadow-[0_10px_30px_rgba(37,99,235,0.15)] active:scale-[0.98] transition-all flex items-center justify-center gap-2 group"
               >
                 {authLoading ? (
                   <RefreshCw className="w-5 h-5 animate-spin" />
@@ -1880,33 +2088,10 @@ export default function App() {
               </button>
             </form>
 
-            <div className="text-center space-y-4">
-              <div className="relative">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-white/5"></div>
-                </div>
-                <div className="relative flex justify-center text-[10px] uppercase font-bold tracking-widest">
-                  <span className="bg-[#080c10] px-3 text-[#6b7280]">Ou continue com</span>
-                </div>
-              </div>
-
-              <button 
-                onClick={handleGoogleLogin}
-                type="button"
-                className="w-full h-14 bg-white/5 border border-white/10 text-white font-bold rounded-2xl flex items-center justify-center gap-3 hover:bg-white/10 transition-all active:scale-[0.98]"
-              >
-                <svg className="w-5 h-5" viewBox="0 0 24 24">
-                  <path fill="#EA4335" d="M5.266 9.765A7.077 7.077 0 0 1 12 4.909c1.69 0 3.218.6 4.418 1.582L19.91 3C17.782 1.145 15.055 0 12 0 7.27 0 3.198 2.698 1.24 6.65l4.026 3.115z" />
-                  <path fill="#FBBC05" d="M16.04 18.013c-1.09.363-2.26.56-3.414.56a7.077 7.077 0 0 1-7.36-4.909L1.24 16.78a11.965 11.965 0 0 0 10.76 7.22c3.136 0 6.002-1.036 8.243-2.782l-4.203-3.205z" />
-                  <path fill="#4285F4" d="M23.714 12.218c0-.838-.077-1.643-.21-2.422H12v4.582h6.573c-.282 1.486-1.123 2.741-2.382 3.586l4.203 3.205c2.454-2.264 3.868-5.591 3.868-9.364l-.55-.585z" />
-                  <path fill="#34A853" d="M5.266 14.235a7.077 7.077 0 0 1 0-4.47L1.24 6.65a11.965 11.965 0 0 0 0 10.7c1.442-2.923 4.026-3.115 4.026-3.115z" />
-                </svg>
-                Google Account
-              </button>
-
+            <div className="text-center space-y-4 mt-6">
               <button 
                 onClick={() => setIsRegistering(!isRegistering)}
-                className="text-[12px] font-bold text-[#6b7280] hover:text-[#00ff88] transition-colors"
+                className="text-[12px] font-bold text-[var(--color-text-muted)] hover:text-[#2563eb] transition-colors"
               >
                 {isRegistering 
                   ? "Já tem uma conta? Entre aqui." 
@@ -1920,8 +2105,9 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#030508] flex justify-center text-[#f0f0f0] font-sans selection:bg-[#00ff88]/30">
-      <div className="w-full max-w-[390px] bg-[#080c10] min-h-screen relative flex flex-col shadow-2xl overflow-hidden">
+    <div className="min-h-screen bg-[var(--color-bg)] flex justify-center text-[var(--color-text)] font-sans selection:bg-[#2563eb]/30">
+      <div className="w-full max-w-[390px] bg-[var(--color-bg)] min-h-screen relative flex flex-col shadow-2xl overflow-hidden">
+        <PoseInstructionsModal />
         <PremiumModal />
         <ShoppingListModal />
         <RouteDayModal />
@@ -1929,14 +2115,14 @@ export default function App() {
         <ExerciseAnalysisModal />
 
         {/* Header */}
-        <header className="border-b border-white/5 bg-[#080c10]/95 backdrop-blur-xl sticky top-0 z-50">
+        <header className="border-b border-[var(--color-border-subtle)] bg-[var(--color-bg)]/95 backdrop-blur-xl sticky top-0 z-50">
           <div className="px-5 h-[70px] flex items-center justify-between">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-lg bg-[var(--color-neon)]/10 flex items-center justify-center shadow-[0_0_15px_rgba(0,255,136,0.1)]">
                 <Zap className="w-5 h-5 text-[var(--color-neon)] fill-current" />
               </div>
               <div className="flex flex-col -space-y-1">
-                <span className="font-display font-black text-[18px] tracking-tight text-white uppercase italic">
+                <span className="font-display font-black text-[18px] tracking-tight text-[var(--color-text)] uppercase italic">
                   MEU SHAPE
                 </span>
                 <span className="text-[8px] font-black text-[var(--color-neon)] uppercase tracking-[0.3em] opacity-80">
@@ -1946,167 +2132,316 @@ export default function App() {
             </div>
 
             <div className="flex items-center gap-2">
-              <div className="hidden xs:flex items-center gap-1.5 px-3 py-1.5 bg-white/5 border border-white/5 rounded-full">
+              <div className="hidden xs:flex items-center gap-1.5 px-3 py-1.5 bg-[var(--color-overlay)] border border-[var(--color-border-subtle)] rounded-full">
                 <Flame className="w-3.5 h-3.5 text-[#ffb800]" />
                 <span className="text-[10px] font-black text-[#ffb800]">
-                  {completedWorkouts?.length || 0}<span className="text-[#6b7280]">d</span>
+                  {completedWorkouts?.length || 0}<span className="text-[var(--color-text-muted)]">d</span>
                 </span>
               </div>
               
-              <div className="flex items-center gap-1 p-1 bg-white/5 rounded-full border border-white/5">
+              <div className="flex items-center gap-1 p-1 bg-[var(--color-overlay)] rounded-full border border-[var(--color-border-subtle)]">
+                <button
+                  onClick={() => setIsDarkMode(!isDarkMode)}
+                  className="w-8 h-8 rounded-full flex items-center justify-center text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] transition-all group"
+                  title="Tema"
+                >
+                  {isDarkMode ? <Sun className="w-4 h-4 group-active:scale-90 transition-transform" /> : <Moon className="w-4 h-4 group-active:scale-90 transition-transform" />}
+                </button>
+                <div className="w-[1px] h-4 bg-[var(--color-border)] mx-0.5" />
                 <button 
                   onClick={handleLogout}
-                  className="w-8 h-8 rounded-full flex items-center justify-center text-[#6b7280] hover:bg-red-500/10 hover:text-red-500 transition-all group"
+                  className="w-8 h-8 rounded-full flex items-center justify-center text-[var(--color-text-muted)] hover:bg-red-500/10 hover:text-red-500 transition-all group"
                   title="Sair"
                 >
                   <LogOut className="w-4 h-4 group-active:scale-90 transition-transform" />
                 </button>
-                <div className="w-[1px] h-4 bg-white/10 mx-0.5" />
+                <div className="w-[1px] h-4 bg-[var(--color-border)] mx-0.5" />
                 <button
                   onClick={() => setShowProfileSettings(true)}
-                  className="w-8 h-8 rounded-full bg-gradient-to-br from-[var(--color-neon)] to-[#004d2c] border border-white/10 flex items-center justify-center overflow-hidden active:scale-95 transition-transform"
+                  className="w-8 h-8 rounded-full bg-gradient-to-br from-[var(--color-neon)] to-[#1e40af] border border-[var(--color-border)] flex items-center justify-center overflow-hidden active:scale-95 transition-transform"
                 >
-                  {profile.avatar ? (
-                    <img src={profile.avatar} className="w-full h-full object-cover" />
-                  ) : (
-                    <span className="text-[10px] font-black text-black">
-                      {profile.name?.substring(0, 2).toUpperCase() || 'WM'}
-                    </span>
-                  )}
+                  <img src={profile.avatar || getAvatar(user?.email || undefined, user?.displayName || undefined)} className="w-full h-full object-cover" />
                 </button>
               </div>
             </div>
           </div>
         </header>
 
-        <main className="flex-1 px-4 pt-4 pb-[80px] overflow-x-hidden overflow-y-auto">
+        <main className="flex-1 px-4 pt-4 pb-[100px] overflow-x-hidden overflow-y-auto relative cyber-grid">
           <AnimatePresence mode="wait">
             {activeTab === "dashboard" && (
               <motion.div
                 key="dashboard"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="max-w-4xl mx-auto space-y-6 pb-12 px-6"
+                className="max-w-4xl mx-auto space-y-8 pb-12 px-6"
               >
                 {/* Header Section */}
-                <div className="flex items-center justify-between pt-2">
+                <div className="flex items-center justify-between pt-4">
                   <div className="flex-1">
-                    <h1 className="text-[10px] font-bold text-[var(--color-neon)] uppercase tracking-[0.2em] opacity-80">Bem-vindo de volta!</h1>
-                    {isEditingProfile ? (
-                      <div className="flex items-center gap-2 mt-1">
-                        <input 
-                          value={profile.name} 
-                          onChange={(e) => setProfile({ ...profile, name: e.target.value.toUpperCase() })}
-                          className="text-[24px] font-display text-[#f0f0f0] font-bold tracking-tight bg-transparent border-b border-[var(--color-neon)] outline-none w-full max-w-[200px]"
-                          onBlur={() => setIsEditingProfile(false)}
-                          autoFocus
-                        />
-                      </div>
-                    ) : (
-                      <h2 
-                        onClick={() => setIsEditingProfile(true)}
-                        className="text-[24px] font-display text-[#f0f0f0] font-bold tracking-tight cursor-pointer hover:text-[var(--color-neon)] transition-colors"
-                      >
-                        {profile.name}
-                      </h2>
-                    )}
+                    <h1 className="text-[11px] font-black text-[var(--primary)] uppercase tracking-[0.3em] neo-glow-text mb-1">COMMAND CENTER</h1>
+                    <div className="flex items-center gap-2">
+                        <div className="w-1.5 h-6 bg-[var(--primary)] rounded-full neo-glow-primary"></div>
+                        {isEditingProfile ? (
+                        <div className="flex items-center gap-2">
+                            <input 
+                            value={profile.name} 
+                            onChange={(e) => setProfile({ ...profile, name: e.target.value.toUpperCase() })}
+                            className="text-[28px] font-display text-[var(--color-text)] font-black tracking-wider bg-transparent border-b border-[var(--primary)]/50 outline-none w-full max-w-[200px]"
+                            onBlur={() => setIsEditingProfile(false)}
+                            autoFocus
+                            />
+                        </div>
+                        ) : (
+                        <h2 
+                            onClick={() => setIsEditingProfile(true)}
+                            className="text-[28px] font-display text-[var(--color-text)] font-black tracking-wider cursor-pointer hover:text-[var(--primary)] transition-all uppercase"
+                        >
+                            {profile.name}
+                        </h2>
+                        )}
+                    </div>
                   </div>
-                  <div className="relative group">
+              <div className="relative group">
                     <input
                       type="file"
-                      id="avatarInput"
+                      ref={avatarInputRef}
                       className="hidden"
                       accept="image/*"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          const reader = new FileReader();
-                          reader.onloadend = () => {
-                            setProfile({ ...profile, avatar: reader.result as string });
-                          };
-                          reader.readAsDataURL(file);
-                        }
-                      }}
+                      onChange={(e) => handleAvatarChange(e, true)}
                     />
-                    <div 
-                      className="w-12 h-12 rounded-full bg-[#111827] border-2 border-[var(--color-neon)] overflow-hidden shadow-[0_0_15px_rgba(0,255,136,0.2)] cursor-pointer"
-                      onClick={() => document.getElementById('avatarInput')?.click()}
+                    <button 
+                      onClick={() => avatarInputRef.current?.click()}
+                      className="w-14 h-14 rounded-xl rotate-3 bg-[var(--color-surface)] border-2 border-[var(--primary)]/40 overflow-hidden neo-glow-primary cursor-pointer active:rotate-0 transition-all flex items-center justify-center p-0"
                     >
-                      {profile.avatar && <img src={profile.avatar} alt="Profile" className="w-full h-full object-cover" />}
-                      <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                        <Camera className="w-4 h-4 text-white" />
-                      </div>
+                      <img 
+                        src={profile.avatar || getAvatar(user?.email || undefined, user?.displayName || undefined)} 
+                        alt="Profile" 
+                        className="w-full h-full object-cover" 
+                      />
+                    </button>
+                    <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-[var(--primary)] rounded-full flex items-center justify-center shadow-lg border border-[var(--color-bg)] pointer-events-none">
+                        <Camera className="w-3 h-3 text-white" />
                     </div>
                   </div>
                 </div>
 
-                {/* Regeneração Muscular - More Compact */}
-                <div className="bg-[var(--color-bg-card)] border border-white/5 rounded-[28px] p-6 shadow-[0_10px_30px_rgba(0,0,0,0.4)]">
-                    <div className="flex justify-between items-center mb-6">
-                        <h2 className="text-[14px] uppercase font-bold text-[#6b7280] tracking-widest flex items-center gap-2">
-                          <Droplets className="w-3.5 h-3.5 text-[var(--color-neon)]"/>
-                          Regeneração
-                        </h2>
-                        <span className="text-[10px] font-bold text-[var(--color-neon)] bg-[var(--color-neon)]/10 px-2 py-0.5 rounded-full uppercase tracking-wider">Status: Bom</span>
-                    </div>
-                    
-                    <div className="grid grid-cols-2 gap-x-6 gap-y-4">
-                        {[
-                            { muscle: 'Peito', recovery: 80 },
-                            { muscle: 'Costas', recovery: 20 },
-                            { muscle: 'Pernas', recovery: 50 },
-                            { muscle: 'Braços', recovery: 100 },
-                        ].map((item) => (
-                            <div key={item.muscle} className="space-y-1.5">
-                                <div className="flex justify-between text-[10px] font-bold text-[#9ca3af] uppercase tracking-wider">
-                                    <span>{item.muscle}</span>
-                                    <span className="text-white">{item.recovery}%</span>
-                                </div>
-                                <div className="h-1.5 w-full bg-[#050505] rounded-full overflow-hidden border border-white/5">
-                                    <div className="h-full bg-[var(--color-neon)] shadow-[0_0_8px_var(--color-neon)] transition-all duration-1000" style={{ width: `${item.recovery}%` }}></div>
-                                </div>
+                {/* Performance Stats Bar */}
+                <div className="grid grid-cols-2 gap-4">
+                    <div className="flex flex-col gap-1 p-4 glass-card rounded-[24px]">
+                        <span className="text-[10px] uppercase font-black text-[var(--color-text-muted)] tracking-widest pl-1">Próximo Treino</span>
+                        <div className="flex items-center gap-3 mt-1.5">
+                            <div className="w-10 h-10 rounded-xl bg-[var(--primary)]/10 flex items-center justify-center text-[var(--primary)] border border-[var(--primary)]/20">
+                                <Zap className="w-5 h-5" />
                             </div>
-                        ))}
+                            <div className="flex flex-col">
+                                <span className="text-[14px] font-display font-black text-[var(--color-text)] uppercase tracking-wider">{trainingPlan?.dias[trainingDayIndex]?.nome || 'OFF'}</span>
+                                <span className="text-[10px] font-bold text-[var(--primary)] uppercase tracking-widest">Ativo</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex flex-col gap-1 p-4 glass-card rounded-[24px]">
+                        <span className="text-[10px] uppercase font-black text-[var(--color-text-muted)] tracking-widest pl-1">Status Bio</span>
+                        <div className="flex items-center gap-3 mt-1.5">
+                            <div className="w-10 h-10 rounded-xl bg-[var(--secondary)]/10 flex items-center justify-center text-[var(--secondary)] border border-[var(--secondary)]/20">
+                                <Activity className="w-5 h-5" />
+                            </div>
+                            <div className="flex flex-col">
+                                <span className="text-[14px] font-display font-black text-[var(--color-text)] uppercase tracking-wider">{workoutHistory.length > 0 ? 'Mapeado' : 'Aguardando'}</span>
+                                <span className="text-[10px] font-bold text-[var(--secondary)] uppercase tracking-widest">{workoutHistory.length > 0 ? 'Sincronizado' : 'Inativo'}</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
-                {/* Action Grid - Tighter */}
-                <div className="grid grid-cols-2 gap-3">
-                    {[
-                        { label: 'Perfil', icon: <Info className="w-5 h-5"/>, tab: 'analyze' },
-                        { label: 'Dieta', icon: <Utensils className="w-5 h-5"/>, tab: 'diet' },
-                        { label: 'Treino', icon: <Dumbbell className="w-5 h-5"/>, tab: 'training' },
-                        { label: 'Evolução', icon: <TrendingUp className="w-5 h-5"/>, tab: 'evolution' },
-              ].map((item) => (
-                        <button key={item.label} onClick={() => setActiveTab(item.tab as any)} 
-                            className="bg-[var(--color-bg-card)] hover:bg-[#111827] active:scale-95 p-5 rounded-[24px] flex flex-col items-center gap-3 transition-all border border-white/5 shadow-[0_4px_15px_rgba(0,0,0,0.2)] group"
-                        >
-                            <div className="text-[#6b7280] group-hover:text-[var(--color-neon)] transition-colors">{item.icon}</div>
-                            <span className="text-[10px] font-bold uppercase tracking-widest text-white">{item.label}</span>
-                        </button>
-                    ))}
-                </div>
-                
-                {/* Next Workout Card - More Compact */}
-                <div className="relative bg-gradient-to-br from-[#111827] to-[#050505] border border-white/5 rounded-[28px] p-6 shadow-[0_10px_30px_rgba(0,0,0,0.4)] overflow-hidden">
-                    <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
-                        <Dumbbell size={100} />
-                    </div>
-                    <h3 className="text-[11px] font-bold text-[#6b7280] uppercase tracking-widest mb-1 opacity-70">Próximo Treino</h3>
-                    <p className="text-[18px] font-bold text-white mb-4">Pernas Completo</p>
+                {/* Latest Scan Result Summary Dashboard */}
+                {analysisHistory.length > 0 && (
+                  <div className="space-y-4">
+                    {analysisHistory[0]?.posture?.detected && (
+                        <div className="bg-amber-500/10 border border-amber-500/30 rounded-[24px] p-4 flex items-start gap-4 animate-pulse">
+                            <div className="p-2 bg-amber-500/20 rounded-xl text-amber-500">
+                                <ShieldAlert className="w-6 h-6" />
+                            </div>
+                            <div className="flex-1">
+                                <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest mb-1 italic">Desvio Postural Detectado</p>
+                                <h4 className="text-sm font-black text-[var(--color-text)] uppercase">{analysisHistory[0].posture.issue}</h4>
+                                <p className="text-[10px] text-[var(--color-text-muted)] font-medium mt-1">Sugerido: {analysisHistory[0].posture.correction}</p>
+                            </div>
+                        </div>
+                    )}
+
                     <button 
                       onClick={() => {
-                        if (trainingPlan) {
-                          startWorkout(trainingPlan.dias[trainingDayIndex]);
-                        } else {
-                          setActiveTab('training');
-                        }
+                          setResult(analysisHistory[0]);
+                          setActiveTab('analyze');
                       }}
-                      className="w-full bg-[var(--color-neon)] text-[#050505] font-black text-[12px] uppercase tracking-widest py-3.5 rounded-xl shadow-[0_0_15px_rgba(0,255,136,0.2)] hover:shadow-[0_0_20px_rgba(0,255,136,0.3)] transition-all"
+                      className="w-full relative group"
                     >
-                        Iniciar Treino
+                    <div className="bg-[var(--color-surface)] border border-[var(--primary)]/20 rounded-[32px] p-6 overflow-hidden relative shadow-2xl">
+                        <div className="absolute top-0 right-0 p-4">
+                           <Shield className="w-8 h-8 text-[var(--primary)]/10 group-hover:text-[var(--primary)]/20 transition-colors" />
+                        </div>
+                        <div className="flex items-center gap-6">
+                            <div className="relative w-20 h-20 flex items-center justify-center">
+                                <svg className="w-full h-full -rotate-90">
+                                    <circle cx="40" cy="40" r="36" fill="transparent" stroke="var(--color-border-subtle)" strokeWidth="4" />
+                                    <circle cx="40" cy="40" r="36" fill="transparent" stroke="var(--primary)" strokeWidth="4" strokeDasharray="226" strokeDashoffset={226 - (226 * analysisHistory[0].overallScore) / 100} />
+                                </svg>
+                                <span className="absolute text-xl font-display font-black text-[var(--color-text)] tracking-wider">{analysisHistory[0].overallScore}</span>
+                            </div>
+                            <div className="flex-1 text-left">
+                                <p className="text-[10px] font-black text-[var(--primary)] uppercase tracking-[0.3em] mb-1">Última Auditoria</p>
+                                <h3 className="text-xl font-black text-[var(--color-text)] uppercase italic leading-tight mb-2">SCORE: {analysisHistory[0].overallScore}/100</h3>
+                                <div className="flex items-center gap-3">
+                                    <div className="px-2 py-1 bg-[var(--color-overlay)] rounded-lg border border-[var(--color-border-subtle)]">
+                                        <span className="text-[10px] font-black text-[var(--color-text-muted)] uppercase tracking-widest">{analysisHistory[0].date}</span>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                        <TrendingUp className="w-3.5 h-3.5 text-[var(--secondary)]" />
+                                        <span className="text-[10px] font-black text-[var(--secondary)] uppercase">Ver Detalhes</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <ChevronRight className="w-6 h-6 text-[var(--color-text-muted)] group-hover:text-[var(--primary)] transition-colors" />
+                        </div>
+                    </div>
+                  </button>
+                 </div>
+                )}
+
+                {/* Analysis Prompts */}
+                {!analysisHistory.length ? (
+                  <div className="glass-card border-[32px] border-transparent rounded-[32px] p-10 flex flex-col items-center justify-center text-center relative overflow-hidden neo-glow-primary border-none shadow-none mb-8 bg-gradient-to-br from-[var(--primary)]/10 to-[#0b0f14]">
+                    <div className="absolute inset-0 cyber-grid opacity-20"></div>
+                    <div className="w-24 h-24 rounded-2xl bg-[var(--primary)]/20 flex items-center justify-center mb-6 backdrop-blur-md border border-[var(--primary)]/30 rotate-12 shadow-[0_0_30px_rgba(0,229,255,0.2)]">
+                      <Camera className="w-12 h-12 text-[var(--primary)]" />
+                    </div>
+                    <h3 className="text-3xl font-black text-white uppercase tracking-wider mb-3 font-display italic">Descubra seu BF%</h3>
+                    <p className="text-[14px] text-[var(--color-text-muted)] max-w-[280px] mb-8 leading-relaxed font-medium">
+                      A inteligência artificial <span className="text-[var(--primary)]">analisa sua biometria</span> e cria um protocolo de evolução personalizado.
+                    </p>
+                    <button 
+                      onClick={() => {
+                        setResult(null);
+                        setImages({});
+                        setActiveTab('analyze');
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                      }}
+                      className="w-full relative overflow-hidden group bg-[var(--primary)] text-[var(--on-primary)] text-[16px] font-black uppercase py-5 rounded-2xl tracking-[0.3em] shadow-[0_0_30px_rgba(0,229,255,0.3)] hover:scale-[1.02] active:scale-95 transition-all"
+                    >
+                      <span className="relative z-10 flex items-center justify-center gap-3">
+                         INICIAR SCANNER
+                         <Zap className="w-5 h-5 fill-current" />
+                      </span>
                     </button>
-                </div>
+                  </div>
+                ) : ((Date.now() - (analysisHistory[0].timestamp || 0)) > 30 * 24 * 60 * 60 * 1000) && (
+                  <div className="glass-card border border-[var(--primary)]/30 rounded-2xl p-5 flex items-center gap-4 relative overflow-hidden">
+                    <div className="absolute top-0 left-0 w-1.5 h-full bg-[var(--primary)] shadow-[0_0_15px_var(--primary-glow)]"></div>
+                    <div className="w-12 h-12 rounded-xl bg-[var(--primary)]/10 flex items-center justify-center shrink-0 border border-[var(--primary)]/20">
+                      <Camera className="w-6 h-6 text-[var(--primary)]" />
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="text-[13px] font-black text-[var(--color-text)] uppercase tracking-widest italic">Check-in Mensal Pendente</h3>
+                      <p className="text-[10px] text-[var(--color-text-muted)] mt-1 leading-tight font-medium">Sua biometria pode ter mudado. Atualize sua análise agora!</p>
+                    </div>
+                    <button 
+                      onClick={() => {
+                        setResult(null);
+                        setImages({});
+                        setActiveTab('analyze');
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                      }}
+                      className="text-[10px] font-black uppercase text-[var(--on-primary)] bg-[var(--primary)] hover:brightness-110 transition-all px-5 py-2.5 rounded-xl shrink-0 neo-glow-primary"
+                    >
+                      Scan Agora
+                    </button>
+                  </div>
+                )}
+
+                {analysisHistory.length > 0 && (
+                  <>
+                    {/* Muscle Bio-Mapping - Main Hub Style */}
+                    <div 
+                        onClick={() => setActiveTab('recovery')}
+                        className="relative glass-card border border-[var(--primary)]/20 rounded-[32px] p-6 overflow-hidden cursor-pointer group active:scale-[0.98] transition-all"
+                    >
+                        <div className="absolute top-0 right-0 w-48 h-48 bg-[var(--primary)]/5 blur-[50px] pointer-events-none group-hover:bg-[var(--primary)]/10 transition-all"></div>
+                        <div className="absolute bottom-0 left-0 w-48 h-48 bg-[var(--secondary)]/5 blur-[50px] pointer-events-none"></div>
+                        <div className="absolute inset-0 bg-gradient-to-br from-[var(--primary)]/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                        
+                        <div className="relative z-10 flex justify-between items-center mb-8">
+                            <h2 className="text-[12px] uppercase font-black text-[var(--color-text)] tracking-[0.3em] flex items-center gap-2 italic">
+                              <div className="w-2 h-2 rounded-full bg-[var(--primary)] animate-pulse shadow-[0_0_8px_var(--primary-glow)]"></div>
+                              MAPEAMENTO BIOMÉTRICO
+                            </h2>
+                            <div className="flex items-center gap-1">
+                                <span className="text-[8px] font-black text-[var(--primary)] bg-[var(--primary)]/10 px-2 py-1 rounded-full uppercase tracking-widest border border-[var(--primary)]/20">SINC_ATIVO</span>
+                                <ChevronRight className="w-4 h-4 text-[var(--outline)]" />
+                            </div>
+                        </div>
+                        
+                        <div className="relative z-10 grid grid-cols-2 gap-x-10 gap-y-6">
+                             {[
+                                { name: 'Peito', label: 'Peitoral' },
+                                { name: 'Costas Superior', label: 'Dorsais' },
+                                { name: 'Quadríceps', label: 'Inferiores' },
+                                { name: 'Abdômen', label: 'Core' },
+                            ].map((item) => {
+                                const status = getMuscleStatus(item.name);
+                                return (
+                                <div key={item.name} className="space-y-3">
+                                    <div className="flex justify-between items-end">
+                                        <div className="flex flex-col">
+                                          <span className="text-[10px] font-black text-[var(--color-text-muted)] uppercase tracking-widest mb-0.5">{item.label}</span>
+                                          <div className="flex items-center gap-1.5">
+                                            <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: status.color }}></div>
+                                            <span className="text-[8px] font-bold uppercase tracking-[0.1em]" style={{ color: status.color }}>
+                                                {status.status}
+                                            </span>
+                                          </div>
+                                        </div>
+                                        <span className="text-[16px] font-display font-black tracking-wider text-white">
+                                           {status.status === 'Pronto p/ Treino' ? '100%' : status.status === 'Recuperando' ? '45%' : status.status === 'Em Transição' ? '75%' : '0%'}
+                                        </span>
+                                    </div>
+                                    <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden border border-white/5">
+                                        <motion.div 
+                                          initial={{ width: 0 }}
+                                          animate={{ width: status.status === 'Pronto p/ Treino' ? '100%' : status.status === 'Recuperando' ? '45%' : status.status === 'Em Transição' ? '75%' : '5%' }}
+                                          transition={{ duration: 1.5, ease: "easeOut" }}
+                                          className="h-full relative"
+                                          style={{ backgroundColor: status.color, boxShadow: `0 0 10px ${status.color}80` }}
+                                        >
+                                            <div className="absolute top-0 right-0 w-1 h-full bg-white opacity-50"></div>
+                                        </motion.div>
+                                    </div>
+                                </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    {/* Training Action Card (Quick Start) */}
+                    {trainingPlan && (
+                      <div className="relative glass-card border border-[var(--primary)]/20 rounded-[28px] p-6 shadow-lg overflow-hidden group">
+                        <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none group-hover:rotate-12 transition-transform">
+                            <Dumbbell size={80} />
+                        </div>
+                        <h3 className="text-[11px] font-black text-[var(--color-text-muted)] uppercase tracking-widest mb-1 italic">Treino Carregado</h3>
+                        <p className="text-[18px] font-display font-black text-white mb-4 uppercase tracking-wide">
+                          {trainingPlan.dias[trainingDayIndex]?.nome_dia}
+                        </p>
+                        <button 
+                          onClick={() => startWorkout(trainingPlan.dias[trainingDayIndex])}
+                          className="w-full bg-[var(--primary)] text-[var(--on-primary)] font-black text-[12px] uppercase tracking-[0.2em] py-4 rounded-xl shadow-[0_0_20px_rgba(0,229,255,0.2)] hover:scale-[1.01] transition-all"
+                        >
+                            INICIAR PROTOCOLO
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
               </motion.div>
             )}
 
@@ -2118,18 +2453,33 @@ export default function App() {
                 exit={{ opacity: 0, y: -10 }}
                 className="flex flex-col gap-6"
               >
-                {/* Hero Section */}
-                <div className="mt-6 mb-2">
-                  <h1 className="font-display text-[36px] leading-[0.9] text-[#f0f0f0] tracking-tight">
-                    ANALISE SEU SHAPE
-                  </h1>
-                  <p className="text-[13px] text-[#6b7280] italic mt-1.5">
-                    IA que enxerga o que o espelho não mostra
-                  </p>
-                </div>
+                {!result && !isAnalyzing && (
+                  <div className="flex flex-col gap-6">
+                    {/* Hero Section */}
+                    <div className="mt-8 mb-4 relative">
+                      <div className="absolute -top-10 -left-6 w-32 h-32 bg-[var(--color-neon)]/20 blur-[50px] rounded-full pointer-events-none"></div>
+                      <div className="absolute top-0 right-0 w-24 h-24 bg-purple-500/20 blur-[40px] rounded-full pointer-events-none"></div>
+                      
+                      <div className="relative inline-block mb-3">
+                      <button
+                        onClick={() => setShowPoseInstructions(true)}
+                        className="bg-[var(--primary)]/10 text-[var(--primary)] border border-[var(--primary)]/30 text-[10px] font-black uppercase tracking-[0.2em] px-3 py-1 rounded-full backdrop-blur-sm flex items-center gap-1.5 hover:bg-[var(--primary)]/20 transition-all"
+                      >
+                        <Info className="w-3 h-3" />
+                        COMO TIRAR A FOTO?
+                      </button>
+                      </div>
+                      
+                      <h1 className="font-display text-[48px] leading-[0.9] text-[var(--color-text)] font-black tracking-tighter italic uppercase">
+                        ANÁLISE DE <br/><span className="text-transparent bg-clip-text bg-gradient-to-r from-[var(--primary)] to-[var(--secondary)] neo-glow-text">SHAPE</span>
+                      </h1>
+                      <p className="text-[14px] text-[var(--color-text-muted)] mt-5 max-w-[300px] leading-relaxed font-medium">
+                        Nossa IA avançada <span className="text-[var(--primary)]">digitaliza sua composição corporal</span> em segundos para um veredito objetivo.
+                      </p>
+                    </div>
 
-                {/* Main Inputs */}
-                <div className="space-y-6">
+                    {/* Main Inputs */}
+                    <div className="space-y-6">
                   {error && (
                     <motion.div
                       initial={{ opacity: 0, height: 0 }}
@@ -2141,13 +2491,17 @@ export default function App() {
                   )}
 
                   <div className="grid grid-cols-3 gap-3">
+                    <div className="col-span-3 text-center text-[var(--color-text-muted)] text-[11px] mb-2 px-2">
+                      <p>📸 Não é obrigatório enviar as 3 fotos, mas para uma análise mais detalhada é recomendado.</p>
+                      <p className="mt-1 flex items-center justify-center gap-1"><Lock className="w-3 h-3"/> Privacidade 100% garantida: Suas fotos não são salvas e ninguém terá acesso a elas.</p>
+                    </div>
                     {(["front", "back", "side"] as const).map((type) => (
                       <div key={type} className="space-y-2">
                         <div
                           onClick={() =>
                             document.getElementById(`input-${type}`)?.click()
                           }
-                          className={`aspect-square rounded-[16px] border-2 border-dashed border-[#00ff88]/30 flex flex-col items-center justify-center cursor-pointer hover:border-[#00ff88] hover:shadow-[0_0_20px_rgba(0,255,136,0.15)] transition-all overflow-hidden relative shadow-[inset_0_0_30px_rgba(0,255,136,0.05)] ${images[type] ? "border-solid border-[#00ff88]" : ""}`}
+                          className={`aspect-square rounded-[16px] border-2 border-dashed border-[#2563eb]/30 flex flex-col items-center justify-center cursor-pointer hover:border-[#2563eb] hover:shadow-[0_0_20px_rgba(0,255,136,0.15)] transition-all overflow-hidden relative shadow-[inset_0_0_30px_rgba(0,255,136,0.05)] ${images[type] ? "border-solid border-[#2563eb]" : ""}`}
                         >
                           {images[type] ? (
                             <>
@@ -2157,8 +2511,8 @@ export default function App() {
                                 className={`w-full h-full object-cover transition-all duration-700 ${isCompetitionMode ? "sepia-[0.5] contrast-[1.2] brightness-[0.8] saturate-[1.5]" : ""} ${isScanning ? "brightness-[0.3]" : ""}`}
                               />
                               <div className="absolute inset-0 bg-black/40" />
-                              <div className="absolute top-2 right-2 w-5 h-5 bg-[#00ff88] rounded-full flex items-center justify-center shadow-lg">
-                                <Check className="w-3 h-3 text-[#080c10]" />
+                              <div className="absolute top-2 right-2 w-5 h-5 bg-[#2563eb] rounded-full flex items-center justify-center shadow-lg">
+                                <Check className="w-3 h-3 text-white" />
                               </div>
                               {isScanning && (
                                 <>
@@ -2171,15 +2525,15 @@ export default function App() {
                                       repeatType: "reverse",
                                       ease: "linear",
                                     }}
-                                    className="absolute left-0 right-0 h-1 bg-[#00ff88] shadow-[0_0_15px_rgba(0,255,136,0.8)] z-10"
+                                    className="absolute left-0 right-0 h-1 bg-[#2563eb] shadow-[0_0_15px_rgba(0,255,136,0.8)] z-10"
                                   />
                                 </>
                               )}
                             </>
                           ) : (
                             <>
-                              <Camera className="w-6 h-6 text-[#6b7280] mb-1" />
-                              <span className="text-[10px] uppercase font-bold text-[#6b7280] tracking-wider text-center px-1">
+                              <Camera className="w-6 h-6 text-[var(--color-text-muted)] mb-1" />
+                              <span className="text-[10px] uppercase font-bold text-[var(--color-text-muted)] tracking-wider text-center px-1">
                                 {type === "front"
                                   ? "Frente"
                                   : type === "back"
@@ -2190,7 +2544,7 @@ export default function App() {
                           )}
                           {isCompetitionMode && images[type] && (
                             <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-[#080c10] to-transparent flex items-end justify-center pb-2 pt-6">
-                              <span className="text-[8px] font-black text-[#f0f0f0] uppercase tracking-widest">
+                              <span className="text-[8px] font-black text-[var(--color-text)] uppercase tracking-widest">
                                 Stage
                               </span>
                             </div>
@@ -2208,11 +2562,30 @@ export default function App() {
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1.5 flex flex-col">
-                      <label className="text-[11px] font-bold text-[#6b7280] uppercase tracking-widest pl-1">
+                      <label className="text-[11px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest pl-1">
+                        Altura (cm)
+                      </label>
+                      <div className="relative">
+                        <Ruler className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--color-text-muted)]" />
+                        <input
+                          type="number"
+                          value={profile.height}
+                          onChange={(e) =>
+                            setProfile((p) => ({
+                              ...p,
+                              height: Number(e.target.value),
+                            }))
+                          }
+                          className="w-full bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] rounded-[12px] pl-9 pr-4 py-3 focus:outline-none focus:border-[#2563eb] focus:shadow-[0_0_0_3px_rgba(0,255,136,0.1)] transition-all text-[14px] text-[var(--color-text)]"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1.5 flex flex-col">
+                      <label className="text-[11px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest pl-1">
                         Peso (kg)
                       </label>
                       <div className="relative">
-                        <Scale className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#6b7280]" />
+                        <Scale className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--color-text-muted)]" />
                         <input
                           type="number"
                           inputMode="decimal"
@@ -2223,16 +2596,16 @@ export default function App() {
                               weight: Number(e.target.value),
                             }))
                           }
-                          className="w-full bg-[#111827] border border-[#1f2937] rounded-[12px] pl-9 pr-4 py-3 focus:outline-none focus:border-[#00ff88] focus:shadow-[0_0_0_3px_rgba(0,255,136,0.1)] transition-all text-[14px] text-[#f0f0f0]"
+                          className="w-full bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] rounded-[12px] pl-9 pr-4 py-3 focus:outline-none focus:border-[#2563eb] focus:shadow-[0_0_0_3px_rgba(0,255,136,0.1)] transition-all text-[14px] text-[var(--color-text)]"
                         />
                       </div>
                     </div>
                     <div className="space-y-1.5 flex flex-col">
-                      <label className="text-[11px] font-bold text-[#6b7280] uppercase tracking-widest pl-1">
+                      <label className="text-[11px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest pl-1">
                         Objetivo
                       </label>
                       <div className="relative">
-                        <Target className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#6b7280]" />
+                        <Target className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--color-text-muted)]" />
                         <select
                           value={profile.goal}
                           onChange={(e) =>
@@ -2241,7 +2614,7 @@ export default function App() {
                               goal: e.target.value as any,
                             }))
                           }
-                          className="w-full appearance-none bg-[#111827] border border-[#1f2937] rounded-[12px] pl-9 pr-4 py-3 focus:outline-none focus:border-[#00ff88] focus:shadow-[0_0_0_3px_rgba(0,255,136,0.1)] transition-all text-[14px] text-[#f0f0f0]"
+                          className="w-full appearance-none bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] rounded-[12px] pl-9 pr-4 py-3 focus:outline-none focus:border-[#2563eb] focus:shadow-[0_0_0_3px_rgba(0,255,136,0.1)] transition-all text-[14px] text-[var(--color-text)]"
                         >
                           <option value="Cutting">Cutting</option>
                           <option value="Bulking">Bulking</option>
@@ -2250,18 +2623,18 @@ export default function App() {
                       </div>
                     </div>
                     <div className="space-y-1.5 flex flex-col">
-                      <label className="text-[11px] font-bold text-[#6b7280] uppercase tracking-widest pl-1">Sexo Biológico</label>
-                      <div className="flex bg-[#111827] border border-[#1f2937] rounded-[12px] p-1">
-                        <button onClick={() => setProfile(p => ({...p, gender: 'Masculino'}))} className={`flex-1 py-2 text-[12px] font-bold rounded-[8px] transition-all ${profile.gender === 'Masculino' ? 'bg-[#1f2937] text-[#00ff88]' : 'text-[#6b7280]'}`}>MASCULINO</button>
-                        <button onClick={() => setProfile(p => ({...p, gender: 'Feminino'}))} className={`flex-1 py-2 text-[12px] font-bold rounded-[8px] transition-all ${profile.gender === 'Feminino' ? 'bg-[#1f2937] text-[#ffb800]' : 'text-[#6b7280]'}`}>FEMININO</button>
+                      <label className="text-[11px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest pl-1">Sexo Biológico</label>
+                      <div className="flex bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] rounded-[12px] p-1">
+                        <button onClick={() => setProfile(p => ({...p, gender: 'Masculino'}))} className={`flex-1 py-2 text-[12px] font-bold rounded-[8px] transition-all ${profile.gender === 'Masculino' ? 'bg-[var(--color-surface)] shadow-sm text-[#2563eb]' : 'text-[var(--color-text-muted)]'}`}>MASCULINO</button>
+                        <button onClick={() => setProfile(p => ({...p, gender: 'Feminino'}))} className={`flex-1 py-2 text-[12px] font-bold rounded-[8px] transition-all ${profile.gender === 'Feminino' ? 'bg-[var(--color-surface)] shadow-sm text-[#ffb800]' : 'text-[var(--color-text-muted)]'}`}>FEMININO</button>
                       </div>
                     </div>
                     <div className="space-y-1.5 flex flex-col">
-                      <label className="text-[11px] font-bold text-[#6b7280] uppercase tracking-widest pl-1">
+                      <label className="text-[11px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest pl-1">
                         Idade
                       </label>
                       <div className="relative">
-                        <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#6b7280]" />
+                        <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--color-text-muted)]" />
                         <input
                           type="number"
                           value={profile.age || 25}
@@ -2271,16 +2644,27 @@ export default function App() {
                               age: Number(e.target.value),
                             }))
                           }
-                          className="w-full bg-[#111827] border border-[#1f2937] rounded-[12px] pl-9 pr-4 py-3 focus:outline-none focus:border-[#00ff88] focus:shadow-[0_0_0_3px_rgba(0,255,136,0.1)] transition-all text-[14px] text-[#f0f0f0]"
+                          className="w-full bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] rounded-[12px] pl-9 pr-4 py-3 focus:outline-none focus:border-[#2563eb] focus:shadow-[0_0_0_3px_rgba(0,255,136,0.1)] transition-all text-[14px] text-[var(--color-text)]"
                         />
                       </div>
                     </div>
                   </div>
 
+                  <div className="space-y-2 mb-4">
+                    <label className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider">Motor da IA (Velocidade vs Qualidade)</label>
+                    <div className="flex bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] rounded-[12px] p-1">
+                      <button onClick={() => setAnalysisModel('best')} className={`flex-1 py-2.5 text-[12px] font-bold rounded-[8px] transition-all flex items-center justify-center gap-2 ${analysisModel === 'best' ? 'bg-[var(--color-surface)] shadow-sm text-purple-400' : 'text-[var(--color-text-muted)]'}`}><Sparkles className="w-4 h-4"/> MELHOR IA</button>
+                      <button onClick={() => setAnalysisModel('fast')} className={`flex-1 py-2.5 text-[12px] font-bold rounded-[8px] transition-all flex items-center justify-center gap-2 ${analysisModel === 'fast' ? 'bg-[var(--color-surface)] shadow-sm text-[#2563eb]' : 'text-[var(--color-text-muted)]'}`}><Zap className="w-4 h-4"/> RÁPIDO</button>
+                    </div>
+                    <p className="text-[10px] text-[var(--color-text-muted)]">
+                      {analysisModel === 'fast' ? 'Rápido (cerca de 5-10 segundos)' : 'Qualidade máxima da IA Pro (pode levar 30-60 segundos)'}
+                    </p>
+                  </div>
+
                   <button
                     onClick={handleAnalyze}
                     disabled={isAnalyzing || isScanning}
-                    className="w-full h-[60px] rounded-[16px] flex items-center justify-center gap-2 bg-gradient-to-br from-[#00ff88] to-[#00cc6a] text-[#080c10] shadow-[0_8px_32px_rgba(0,255,136,0.3)] transition-all active:scale-[0.97] active:shadow-[0_2px_10px_rgba(0,255,136,0.3)] disabled:opacity-50"
+                    className="w-full h-[60px] rounded-[16px] flex items-center justify-center gap-2 bg-gradient-to-br from-[#2563eb] to-[#1d4ed8] text-white shadow-[0_8px_32px_rgba(37,99,235,0.2)] transition-all active:scale-[0.97] active:shadow-[0_2px_10px_rgba(37,99,235,0.2)] disabled:opacity-50"
                   >
                     <Zap className="w-5 h-5 fill-current" />
                     <span className="font-display text-[20px] mt-1 tracking-wide">
@@ -2292,13 +2676,13 @@ export default function App() {
                     </span>
                   </button>
 
-                  <div className="p-4 bg-[#0d1117] border border-white/5 rounded-2xl">
+                  <div className="p-4 bg-[var(--color-bg)] border border-[var(--color-border-subtle)] rounded-2xl">
                     <div className="flex justify-between items-center mb-2">
-                      <span className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">
+                      <span className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider">
                         Análises Restantes
                       </span>
                       <span
-                        className={`text-[10px] font-bold ${isPremium ? "text-[#00ff88]" : analysisCount >= 3 ? "text-[#ff4444]" : "text-[#00ff88]"}`}
+                        className={`text-[10px] font-bold ${isPremium ? "text-[#2563eb]" : analysisCount >= 3 ? "text-[#ff4444]" : "text-[#2563eb]"}`}
                       >
                         {isPremium
                           ? "Ilimitado"
@@ -2307,9 +2691,9 @@ export default function App() {
                     </div>
                     {!isPremium && (
                       <>
-                        <div className="h-1 bg-[#111827] rounded-full overflow-hidden">
+                        <div className="h-1 bg-[var(--color-surface)] shadow-sm rounded-full overflow-hidden">
                           <div
-                            className={`h-full transition-all duration-500 rounded-full ${analysisCount >= 3 ? "bg-[#ff4444]" : "bg-[#00ff88]"}`}
+                            className={`h-full transition-all duration-500 rounded-full ${analysisCount >= 3 ? "bg-[#ff4444]" : "bg-[#2563eb]"}`}
                             style={{
                               width: `${Math.min(100, (analysisCount / 3) * 100)}%`,
                             }}
@@ -2325,9 +2709,9 @@ export default function App() {
                 </div>
 
                 {/* Natural Limit Calculator */}
-                <div className="p-5 rounded-[20px] bg-[#0d1117] border border-[rgba(255,255,255,0.06)] space-y-4">
-                  <h3 className="text-[16px] font-display uppercase tracking-wide text-[#f0f0f0] flex items-center gap-2">
-                    <Calculator className="w-5 h-5 text-[#00ff88]" /> Limite
+                <div className="p-5 rounded-[20px] bg-[var(--color-bg)] border border-[rgba(255,255,255,0.06)] space-y-4">
+                  <h3 className="text-[16px] font-display uppercase tracking-wide text-[var(--color-text)] flex items-center gap-2">
+                    <Calculator className="w-5 h-5 text-[#2563eb]" /> Limite
                     Genético Natural
                   </h3>
                   <div className="grid grid-cols-2 gap-3">
@@ -2335,7 +2719,7 @@ export default function App() {
                       placeholder="Punho (cm)"
                       type="number"
                       inputMode="decimal"
-                      className="bg-[#111827] border border-[#1f2937] rounded-[12px] px-4 py-3 text-[14px] text-[#f0f0f0] focus:outline-none focus:border-[#00ff88] focus:shadow-[0_0_0_3px_rgba(0,255,136,0.1)] transition-all"
+                      className="bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] rounded-[12px] px-4 py-3 text-[14px] text-[var(--color-text)] focus:outline-none focus:border-[#2563eb] focus:shadow-[0_0_0_3px_rgba(0,255,136,0.1)] transition-all"
                       onChange={(e) =>
                         setProfile((p) => ({
                           ...p,
@@ -2347,7 +2731,7 @@ export default function App() {
                       placeholder="Tornozelo (cm)"
                       type="number"
                       inputMode="decimal"
-                      className="bg-[#111827] border border-[#1f2937] rounded-[12px] px-4 py-3 text-[14px] text-[#f0f0f0] focus:outline-none focus:border-[#00ff88] focus:shadow-[0_0_0_3px_rgba(0,255,136,0.1)] transition-all"
+                      className="bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] rounded-[12px] px-4 py-3 text-[14px] text-[var(--color-text)] focus:outline-none focus:border-[#2563eb] focus:shadow-[0_0_0_3px_rgba(0,255,136,0.1)] transition-all"
                       onChange={(e) =>
                         setProfile((p) => ({
                           ...p,
@@ -2358,30 +2742,30 @@ export default function App() {
                   </div>
                   <button
                     onClick={calculateNaturalLimit}
-                    className="w-full py-3 bg-[#111827] border border-[rgba(255,255,255,0.04)] rounded-[12px] text-[12px] font-bold text-[#f0f0f0] uppercase tracking-widest transition-all hover:bg-[#1f2937] active:scale-[0.97]"
+                    className="w-full py-3 bg-[var(--color-surface)] shadow-sm border border-[rgba(255,255,255,0.04)] rounded-[12px] text-[12px] font-bold text-[var(--color-text)] uppercase tracking-widest transition-all hover:bg-[var(--color-surface)] shadow-sm active:scale-[0.97]"
                   >
                     Calcular Potencial
                   </button>
                   {limitResult && (
-                    <div className="p-5 bg-[#00ff88]/5 border border-[#00ff88]/10 rounded-[16px] space-y-3 mt-4">
+                    <div className="p-5 bg-[#2563eb]/5 border border-[#2563eb]/10 rounded-[16px] space-y-3 mt-4">
                       <div className="flex justify-between items-end">
                         <div>
-                          <p className="text-[10px] text-[#6b7280] uppercase font-bold mb-1">
+                          <p className="text-[10px] text-[var(--color-text-muted)] uppercase font-bold mb-1">
                             Peso Limite Estimado
                           </p>
-                          <p className="text-[24px] font-display text-[#00ff88]">
+                          <p className="text-[24px] font-display text-[#2563eb]">
                             {limitResult.maxMass}
                             <span className="text-[14px]">kg</span>{" "}
-                            <span className="text-[10px] text-[#6b7280] font-sans">
+                            <span className="text-[10px] text-[var(--color-text-muted)] font-sans">
                               @ 10% BF
                             </span>
                           </p>
                         </div>
                         <div className="text-right">
-                          <p className="text-[10px] font-bold text-[#00ff88]/60 uppercase tracking-widest">
+                          <p className="text-[10px] font-bold text-[#2563eb]/60 uppercase tracking-widest">
                             Potencial
                           </p>
-                          <p className="text-[20px] font-display text-[#f0f0f0]">
+                          <p className="text-[20px] font-display text-[var(--color-text)]">
                             {Math.round(
                               (limitResult.currentMass / limitResult.maxMass) *
                                 100,
@@ -2390,16 +2774,16 @@ export default function App() {
                           </p>
                         </div>
                       </div>
-                      <div className="h-1.5 bg-[#111827] rounded-full overflow-hidden">
+                      <div className="h-1.5 bg-[var(--color-surface)] shadow-sm rounded-full overflow-hidden">
                         <motion.div
                           initial={{ width: 0 }}
                           animate={{
                             width: `${Math.min(100, (limitResult.currentMass / limitResult.maxMass) * 100)}%`,
                           }}
-                          className="h-full bg-gradient-to-r from-[#00ff88] to-[#00cc6a]"
+                          className="h-full bg-gradient-to-r from-[#2563eb] to-[#1d4ed8]"
                         />
                       </div>
-                      <p className="text-[10px] text-[#6b7280] italic text-center">
+                      <p className="text-[10px] text-[var(--color-text-muted)] italic text-center">
                         Você está a{" "}
                         {Math.round(
                           (limitResult.currentMass / limitResult.maxMass) * 100,
@@ -2409,60 +2793,81 @@ export default function App() {
                     </div>
                   )}
                 </div>
+                </div>
+              )}
 
                 {/* Right: Results */}
                 <div className="space-y-6">
-                  {!result && !isAnalyzing ? (
-                    <div className="h-full min-h-[500px] border border-white/5 rounded-[24px] bg-[#0d1117] flex flex-col items-center justify-center p-12 text-center shadow-2xl">
-                      <div className="w-24 h-24 rounded-full bg-[#00ff88]/5 flex items-center justify-center mb-6 animate-pulse">
-                        <Target className="w-12 h-12 text-[#00ff88]/50" />
-                      </div>
-                      <h2 className="text-[20px] font-display font-medium text-[#f0f0f0] mb-3 tracking-wide">
-                        PRONTO PARA A ANÁLISE?
-                      </h2>
-                      <p className="text-[#6b7280] text-[14px] max-w-xs leading-relaxed">
-                        Envie suas fotos para descobrir assimetrias, pontos
-                        fracos e gerar seu protocolo focado com inteligência
-                        artificial.
-                      </p>
-                    </div>
-                  ) : isAnalyzing ? (
-                    <div className="h-full min-h-[500px] flex flex-col items-center justify-center p-12 space-y-8 relative overflow-hidden bg-[#0d1117] rounded-[24px]">
+                  {isAnalyzing ? (
+                    <div className="h-full min-h-[500px] flex flex-col items-center justify-center p-12 space-y-8 relative overflow-hidden bg-[var(--color-bg)] rounded-[24px]">
                       <div className="absolute inset-0 z-0">
-                        <div className="absolute top-1/4 left-1/4 w-2 h-2 bg-[#00ff88] rounded-full animate-ping opacity-20" />
+                        <div className="absolute top-1/4 left-1/4 w-2 h-2 bg-[#2563eb] rounded-full animate-ping opacity-20" />
                         <div
-                          className="absolute bottom-1/4 right-1/4 w-3 h-3 bg-[#00ff88] rounded-full animate-ping opacity-10"
+                          className="absolute bottom-1/4 right-1/4 w-3 h-3 bg-[#2563eb] rounded-full animate-ping opacity-10"
                           style={{ animationDelay: "0.5s" }}
                         />
                       </div>
                       <div className="relative z-10 flex flex-col items-center">
                         <div className="w-[120px] h-[120px] relative flex items-center justify-center">
-                          <div className="absolute inset-0 rounded-full border-4 border-[#00ff88]/10" />
-                          <div className="absolute inset-0 rounded-full border-4 border-t-[#00ff88] animate-[spin_1.5s_linear_infinite]" />
-                          <Zap className="w-10 h-10 text-[#00ff88] animate-pulse drop-shadow-[0_0_15px_rgba(0,255,136,0.6)]" />
+                          <div className="absolute inset-0 rounded-full border-4 border-[#2563eb]/10" />
+                          <div className="absolute inset-0 rounded-full border-4 border-t-[#2563eb] animate-[spin_1.5s_linear_infinite]" />
+                          <Zap className="w-10 h-10 text-[#2563eb] animate-pulse drop-shadow-[0_0_15px_rgba(0,255,136,0.6)]" />
                         </div>
                       </div>
                       <div className="text-center space-y-3 z-10 w-full max-w-xs">
-                        <h3 className="font-display text-[24px] leading-none text-[#f0f0f0] tracking-wide animate-pulse">
+                        <h3 className="font-display text-[24px] leading-none text-[var(--color-text)] tracking-wide animate-pulse">
                           {loadingMessage}
                         </h3>
-                        <div className="h-1 bg-[#111827] rounded-full overflow-hidden w-full relative">
-                          <div className="absolute top-0 bottom-0 left-0 w-1/3 bg-[#00ff88] rounded-full animate-[translateX_2s_ease-in-out_infinite]" />
+                        <div className="h-1 bg-[var(--color-surface)] shadow-sm rounded-full overflow-hidden w-full relative">
+                          <div className="absolute top-0 bottom-0 left-0 w-1/3 bg-[#2563eb] rounded-full animate-[translateX_2s_ease-in-out_infinite]" />
                         </div>
                       </div>
                     </div>
-                  ) : (
+                  ) : result ? (
                     <div className="space-y-6 pb-12 relative animate-fade-in-up">
                       {/* Score Hero */}
                       <div className="relative flex flex-col items-center justify-center py-6">
-                        <div className="absolute top-0 right-0 bg-[#111827] border border-[#1f2937] px-3 py-1.5 rounded-[8px] flex flex-col items-end">
-                          <span className="text-[9px] uppercase tracking-widest text-[#6b7280] font-bold">
-                            Gordura
-                          </span>
-                          <span className="text-[14px] font-display text-[#f0f0f0] tracking-wider">
-                            {result.bfEstimate}% BF
-                          </span>
+                        <div className="absolute top-0 right-0 p-4">
+                          <button 
+                            onClick={() => {
+                              if (confirm("Deseja realizar um novo scan? Isso limpará o resultado atual.")) {
+                                setResult(null);
+                                setImages({});
+                              }
+                            }}
+                            className="bg-[var(--color-surface-hover)] border border-[var(--color-border)] px-4 py-2 rounded-xl text-[10px] font-black uppercase text-[var(--color-text)] hover:bg-[var(--color-border-subtle)] transition-all flex items-center gap-2 shadow-sm"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            Novo Scan
+                          </button>
                         </div>
+
+                        {/* Comparison Card if history exists */}
+                        {analysisHistory.length > 1 && (
+                          <div className="absolute top-0 left-0 bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] px-3 py-2 rounded-xl flex flex-col items-start max-w-[120px]">
+                            <span className="text-[8px] uppercase tracking-widest text-[var(--color-text-muted)] font-black mb-1">Evolução</span>
+                            {(() => {
+                              const prev = analysisHistory[1];
+                              const scoreDiff = result.overallScore - prev.overallScore;
+                              const bfDiff = result.bfEstimate - prev.bfEstimate;
+                              return (
+                                <div className="space-y-1">
+                                  <div className="flex items-center gap-1">
+                                    <span className={`text-[10px] font-bold ${scoreDiff >= 0 ? 'text-[#2563eb]' : 'text-red-500'}`}>
+                                      {scoreDiff >= 0 ? '+' : ''}{scoreDiff} pts
+                                    </span>
+                                    <TrendingUp className={`w-3 h-3 ${scoreDiff >= 0 ? 'text-[#2563eb]' : 'text-red-500 rotate-180'}`} />
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    <span className={`text-[10px] font-bold ${bfDiff <= 0 ? 'text-[#2563eb]' : 'text-red-500'}`}>
+                                      {bfDiff > 0 ? '+' : ''}{bfDiff.toFixed(1)}% BF
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        )}
 
                         <div className="relative w-[200px] h-[200px] flex items-center justify-center mb-4">
                           <svg
@@ -2501,17 +2906,17 @@ export default function App() {
                                 x2="100%"
                                 y2="100%"
                               >
-                                <stop offset="0%" stopColor="#00ff88" />
-                                <stop offset="100%" stopColor="#00cc6a" />
+                                <stop offset="0%" stopColor="#2563eb" />
+                                <stop offset="100%" stopColor="#1d4ed8" />
                               </linearGradient>
                             </defs>
                           </svg>
                           <div className="absolute inset-0 flex flex-col items-center justify-center">
                             <div className="flex items-baseline">
-                              <span className="font-display font-black text-[80px] leading-none text-[#f0f0f0] tracking-[-2px]">
+                              <span className="font-display font-black text-[80px] leading-none text-[var(--color-text)] tracking-[-2px]">
                                 {result.overallScore}
                               </span>
-                              <span className="text-[20px] font-display text-[#6b7280]">
+                              <span className="text-[20px] font-display text-[var(--color-text-muted)]">
                                 /100
                               </span>
                             </div>
@@ -2519,7 +2924,7 @@ export default function App() {
                         </div>
 
                         <div
-                          className={`px-4 py-1.5 rounded-full border text-[11px] font-bold uppercase tracking-widest ${result.bfEstimate < 10 ? "bg-[#00ff88]/10 text-[#00ff88] border-[#00ff88]/20" : result.bfEstimate < 15 ? "bg-[#00cc6a]/10 text-[#00cc6a] border-[#00cc6a]/20" : result.bfEstimate < 20 ? "bg-yellow-500/10 text-yellow-500 border-yellow-500/20" : "bg-[#374151]/20 text-[#6b7280] border-[#374151]"}`}
+                          className={`px-4 py-1.5 rounded-full border text-[11px] font-bold uppercase tracking-widest ${result.bfEstimate < 10 ? "bg-[#2563eb]/10 text-[#2563eb] border-[#2563eb]/20" : result.bfEstimate < 15 ? "bg-[#1d4ed8]/10 text-[#1d4ed8] border-[#1d4ed8]/20" : result.bfEstimate < 20 ? "bg-yellow-500/10 text-yellow-500 border-yellow-500/20" : "bg-[#374151]/20 text-[var(--color-text-muted)] border-[#374151]"}`}
                         >
                           Categoria:{" "}
                           {result.bfEstimate < 10
@@ -2534,15 +2939,15 @@ export default function App() {
 
                       {/* Mini Stats Row */}
                       <div className="grid grid-cols-3 gap-3 px-1">
-                        <div className="bg-[#0d1117] border border-white/5 rounded-[16px] p-3 flex flex-col justify-between">
-                          <span className="text-[10px] uppercase font-bold text-[#6b7280] mb-2">
+                        <div className="bg-[var(--color-bg)] border border-[var(--color-border-subtle)] rounded-[16px] p-3 flex flex-col justify-between">
+                          <span className="text-[10px] uppercase font-bold text-[var(--color-text-muted)] mb-2">
                             BF%
                           </span>
                           <div>
-                            <p className="font-display text-[24px] text-[#f0f0f0] leading-none mb-1">
+                            <p className="font-display text-[24px] text-[var(--color-text)] leading-none mb-1">
                               {result.bfEstimate}%
                             </p>
-                            <div className="h-1 bg-[#111827] rounded-full overflow-hidden">
+                            <div className="h-1 bg-[var(--color-surface)] shadow-sm rounded-full overflow-hidden">
                               <div
                                 className="h-full bg-yellow-500 rounded-full"
                                 style={{
@@ -2552,17 +2957,17 @@ export default function App() {
                             </div>
                           </div>
                         </div>
-                        <div className="bg-[#0d1117] border border-white/5 rounded-[16px] p-3 flex flex-col justify-between">
-                          <span className="text-[10px] uppercase font-bold text-[#6b7280] mb-2">
+                        <div className="bg-[var(--color-bg)] border border-[var(--color-border-subtle)] rounded-[16px] p-3 flex flex-col justify-between">
+                          <span className="text-[10px] uppercase font-bold text-[var(--color-text-muted)] mb-2">
                             Simetria
                           </span>
                           <div>
-                            <p className="font-display text-[24px] text-[#f0f0f0] leading-none mb-1">
+                            <p className="font-display text-[24px] text-[var(--color-text)] leading-none mb-1">
                               {result.metrics.symmetry}/10
                             </p>
-                            <div className="h-1 bg-[#111827] rounded-full overflow-hidden">
+                            <div className="h-1 bg-[var(--color-surface)] shadow-sm rounded-full overflow-hidden">
                               <div
-                                className="h-full bg-[#00ff88] rounded-full"
+                                className="h-full bg-[#2563eb] rounded-full"
                                 style={{
                                   width: `${result.metrics.symmetry * 10}%`,
                                 }}
@@ -2570,17 +2975,17 @@ export default function App() {
                             </div>
                           </div>
                         </div>
-                        <div className="bg-[#0d1117] border border-white/5 rounded-[16px] p-3 flex flex-col justify-between">
-                          <span className="text-[10px] uppercase font-bold text-[#6b7280] mb-2">
+                        <div className="bg-[var(--color-bg)] border border-[var(--color-border-subtle)] rounded-[16px] p-3 flex flex-col justify-between">
+                          <span className="text-[10px] uppercase font-bold text-[var(--color-text-muted)] mb-2">
                             Volume
                           </span>
                           <div>
-                            <p className="font-display text-[24px] text-[#f0f0f0] leading-none mb-1">
+                            <p className="font-display text-[24px] text-[var(--color-text)] leading-none mb-1">
                               {result.metrics.volume}/10
                             </p>
-                            <div className="h-1 bg-[#111827] rounded-full overflow-hidden">
+                            <div className="h-1 bg-[var(--color-surface)] shadow-sm rounded-full overflow-hidden">
                               <div
-                                className="h-full bg-[#00cc6a] rounded-full"
+                                className="h-full bg-[#1d4ed8] rounded-full"
                                 style={{
                                   width: `${result.metrics.volume * 10}%`,
                                 }}
@@ -2615,7 +3020,7 @@ export default function App() {
                                 setActiveAccordion(null);
                               }
                             }}
-                            className={`px-5 py-2.5 rounded-full text-[11px] uppercase tracking-widest transition-all whitespace-nowrap border flex-shrink-0 ${analysisFilter === f ? "bg-[#00ff88] border-[#00ff88] text-[#080c10] font-bold shadow-[0_4px_12px_rgba(0,255,136,0.2)]" : "bg-transparent border-[#1f2937] text-[#6b7280] font-medium hover:border-white/20"}`}
+                            className={`px-5 py-2.5 rounded-full text-[11px] uppercase tracking-widest transition-all whitespace-nowrap border flex-shrink-0 ${analysisFilter === f ? "bg-[#2563eb] border-[#2563eb] text-white font-bold shadow-[0_4px_12px_rgba(37,99,235,0.15)]" : "bg-transparent border-[var(--color-border)] text-[var(--color-text-muted)] font-medium hover:border-black/20"}`}
                           >
                             {f}
                           </button>
@@ -2673,7 +3078,7 @@ export default function App() {
                         {(analysisFilter === "Tudo" ||
                           analysisFilter === "Gordura") && (
                           <div
-                            className={`rounded-[20px] border transition-all duration-300 overflow-hidden ${activeAccordion === "fat" ? "bg-[#111827] border-white/10" : "bg-[#0d1117] border-[rgba(255,255,255,0.06)]"}`}
+                            className={`rounded-[20px] border transition-all duration-300 overflow-hidden ${activeAccordion === "fat" ? "bg-[var(--color-surface)] shadow-sm border-[var(--color-border)]" : "bg-[var(--color-bg)] border-[rgba(255,255,255,0.06)]"}`}
                           >
                             <button
                               onClick={() =>
@@ -2685,7 +3090,7 @@ export default function App() {
                             >
                               <div className="flex items-center gap-4">
                                 <div
-                                  className={`w-[36px] h-[36px] rounded-full flex items-center justify-center text-[14px] ${result.bfEstimate > 18 ? "bg-[#ffb800]/10 text-[#ffb800]" : "bg-[#00ff88]/10 text-[#00ff88]"}`}
+                                  className={`w-[36px] h-[36px] rounded-full flex items-center justify-center text-[14px] ${result.bfEstimate > 18 ? "bg-[#ffb800]/10 text-[#ffb800]" : "bg-[#2563eb]/10 text-[#2563eb]"}`}
                                 >
                                   <svg
                                     width="18"
@@ -2702,17 +3107,17 @@ export default function App() {
                                   </svg>
                                 </div>
                                 <div className="text-left flex flex-col pt-1">
-                                  <h4 className="text-[14px] font-semibold text-[#f0f0f0] leading-tight">
+                                  <h4 className="text-[14px] font-semibold text-[var(--color-text)] leading-tight">
                                     Gordura Corporal
                                   </h4>
                                 </div>
                               </div>
                               <div className="flex items-center gap-3">
-                                <span className="px-2 py-1 rounded-[6px] bg-[#111827] border border-[#1f2937] text-[12px] font-bold text-[#f0f0f0]">
+                                <span className="px-2 py-1 rounded-[6px] bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] text-[12px] font-bold text-[var(--color-text)]">
                                   {result.bfEstimate}%
                                 </span>
                                 <ChevronDown
-                                  className={`w-5 h-5 text-[#6b7280] transition-transform duration-300 ${activeAccordion === "fat" ? "rotate-180 text-[#f0f0f0]" : ""}`}
+                                  className={`w-5 h-5 text-[var(--color-text-muted)] transition-transform duration-300 ${activeAccordion === "fat" ? "rotate-180 text-[var(--color-text)]" : ""}`}
                                 />
                               </div>
                             </button>
@@ -2726,32 +3131,32 @@ export default function App() {
                               className="overflow-hidden"
                             >
                               <div className="px-[20px] pb-[20px] space-y-4">
-                                <div className="bg-[#080c10] border border-[rgba(255,255,255,0.04)] rounded-[12px] p-4 flex flex-col gap-3">
+                                <div className="bg-[var(--color-bg)] border border-[rgba(255,255,255,0.04)] rounded-[12px] p-4 flex flex-col gap-3">
                                   <div className="flex justify-between items-center py-2 border-b border-[rgba(255,255,255,0.04)]">
                                     <div className="flex items-center gap-2">
                                       <div className="w-1.5 h-1.5 rounded-full bg-[#ffb800]" />
-                                      <span className="text-[12px] text-[#6b7280]">
+                                      <span className="text-[12px] text-[var(--color-text-muted)]">
                                         Fase Recomendada
                                       </span>
                                     </div>
-                                    <span className="text-[12px] font-bold text-[#f0f0f0]">
+                                    <span className="text-[12px] font-bold text-[var(--color-text)]">
                                       {result.recommendations.dietPhase}
                                     </span>
                                   </div>
                                   <div className="flex justify-between items-center py-2">
                                     <div className="flex items-center gap-2">
-                                      <div className="w-1.5 h-1.5 rounded-full bg-[#00ff88]" />
-                                      <span className="text-[12px] text-[#6b7280]">
+                                      <div className="w-1.5 h-1.5 rounded-full bg-[#2563eb]" />
+                                      <span className="text-[12px] text-[var(--color-text-muted)]">
                                         Calorias Sugeridas
                                       </span>
                                     </div>
-                                    <span className="text-[12px] font-bold text-[#f0f0f0]">
+                                    <span className="text-[12px] font-bold text-[var(--color-text)]">
                                       {result.recommendations.macros.calories}{" "}
                                       kcal
                                     </span>
                                   </div>
                                 </div>
-                                <p className="text-[13px] text-[#6b7280] italic leading-relaxed">
+                                <p className="text-[13px] text-[var(--color-text-muted)] italic leading-relaxed">
                                   "{result.analysis.summary.split(".")[0]}."
                                 </p>
                               </div>
@@ -2763,7 +3168,7 @@ export default function App() {
                         {(analysisFilter === "Tudo" ||
                           analysisFilter === "Simetria") && (
                           <div
-                            className={`rounded-[20px] border transition-all duration-300 overflow-hidden ${activeAccordion === "sym" ? "bg-[#111827] border-white/10" : "bg-[#0d1117] border-[rgba(255,255,255,0.06)]"}`}
+                            className={`rounded-[20px] border transition-all duration-300 overflow-hidden ${activeAccordion === "sym" ? "bg-[var(--color-surface)] shadow-sm border-[var(--color-border)]" : "bg-[var(--color-bg)] border-[rgba(255,255,255,0.06)]"}`}
                           >
                             <button
                               onClick={() =>
@@ -2775,7 +3180,7 @@ export default function App() {
                             >
                               <div className="flex items-center gap-4">
                                 <div
-                                  className={`w-[36px] h-[36px] rounded-full flex items-center justify-center text-[14px] ${result.metrics.symmetry >= 80 ? "bg-[#00ff88]/10 text-[#00ff88]" : result.metrics.symmetry >= 60 ? "bg-[#ffb800]/10 text-[#ffb800]" : "bg-[#ff4444]/10 text-[#ff4444]"}`}
+                                  className={`w-[36px] h-[36px] rounded-full flex items-center justify-center text-[14px] ${result.metrics.symmetry >= 80 ? "bg-[#2563eb]/10 text-[#2563eb]" : result.metrics.symmetry >= 60 ? "bg-[#ffb800]/10 text-[#ffb800]" : "bg-[#ff4444]/10 text-[#ff4444]"}`}
                                 >
                                   <svg
                                     width="18"
@@ -2793,13 +3198,13 @@ export default function App() {
                                   </svg>
                                 </div>
                                 <div className="text-left flex flex-col pt-1">
-                                  <h4 className="text-[14px] font-semibold text-[#f0f0f0] leading-tight">
+                                  <h4 className="text-[14px] font-semibold text-[var(--color-text)] leading-tight">
                                     Simetria Muscular
                                   </h4>
                                 </div>
                               </div>
                               <div className="flex items-center gap-3">
-                                <span className="px-2 py-1 rounded-[6px] bg-[#111827] border border-[#1f2937] text-[12px] font-bold text-[#f0f0f0]">
+                                <span className="px-2 py-1 rounded-[6px] bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] text-[12px] font-bold text-[var(--color-text)]">
                                   {result.metrics.symmetry >= 80
                                     ? "Boa"
                                     : result.metrics.symmetry >= 60
@@ -2807,7 +3212,7 @@ export default function App() {
                                       : "Fraca"}
                                 </span>
                                 <ChevronDown
-                                  className={`w-5 h-5 text-[#6b7280] transition-transform duration-300 ${activeAccordion === "sym" ? "rotate-180 text-[#f0f0f0]" : ""}`}
+                                  className={`w-5 h-5 text-[var(--color-text-muted)] transition-transform duration-300 ${activeAccordion === "sym" ? "rotate-180 text-[var(--color-text)]" : ""}`}
                                 />
                               </div>
                             </button>
@@ -2821,7 +3226,7 @@ export default function App() {
                               className="overflow-hidden"
                             >
                               <div className="px-[20px] pb-[20px] space-y-4">
-                                <div className="bg-[#080c10] border border-[rgba(255,255,255,0.04)] rounded-[12px] p-4 flex flex-col gap-0">
+                                <div className="bg-[var(--color-bg)] border border-[rgba(255,255,255,0.04)] rounded-[12px] p-4 flex flex-col gap-0">
                                   {result.proportions.imbalances.map(
                                     (imb, i) => (
                                       <div
@@ -2830,7 +3235,7 @@ export default function App() {
                                       >
                                         <div className="flex items-start gap-2 pt-0.5">
                                           <div className="w-1.5 h-1.5 rounded-full bg-[#ffb800] mt-1 shrink-0" />
-                                          <span className="text-[12px] text-[#f0f0f0]">
+                                          <span className="text-[12px] text-[var(--color-text)]">
                                             {imb}
                                           </span>
                                         </div>
@@ -2838,7 +3243,7 @@ export default function App() {
                                     ),
                                   )}
                                 </div>
-                                <p className="text-[13px] text-[#6b7280] italic leading-relaxed">
+                                <p className="text-[13px] text-[var(--color-text-muted)] italic leading-relaxed">
                                   "{result.proportions.description}"
                                 </p>
                               </div>
@@ -2850,7 +3255,7 @@ export default function App() {
                         {(analysisFilter === "Tudo" ||
                           analysisFilter === "Definição") && (
                           <div
-                            className={`rounded-[20px] border transition-all duration-300 overflow-hidden ${activeAccordion === "def" ? "bg-[#111827] border-white/10" : "bg-[#0d1117] border-[rgba(255,255,255,0.06)]"}`}
+                            className={`rounded-[20px] border transition-all duration-300 overflow-hidden ${activeAccordion === "def" ? "bg-[var(--color-surface)] shadow-sm border-[var(--color-border)]" : "bg-[var(--color-bg)] border-[rgba(255,255,255,0.06)]"}`}
                           >
                             <button
                               onClick={() =>
@@ -2862,7 +3267,7 @@ export default function App() {
                             >
                               <div className="flex items-center gap-4">
                                 <div
-                                  className={`w-[36px] h-[36px] rounded-full flex items-center justify-center text-[14px] ${result.metrics.definition >= 75 ? "bg-[#00ff88]/10 text-[#00ff88]" : "bg-[#ffb800]/10 text-[#ffb800]"}`}
+                                  className={`w-[36px] h-[36px] rounded-full flex items-center justify-center text-[14px] ${result.metrics.definition >= 75 ? "bg-[#2563eb]/10 text-[#2563eb]" : "bg-[#ffb800]/10 text-[#ffb800]"}`}
                                 >
                                   <svg
                                     width="18"
@@ -2880,19 +3285,19 @@ export default function App() {
                                   </svg>
                                 </div>
                                 <div className="text-left flex flex-col pt-1">
-                                  <h4 className="text-[14px] font-semibold text-[#f0f0f0] leading-tight">
+                                  <h4 className="text-[14px] font-semibold text-[var(--color-text)] leading-tight">
                                     Definição Muscular
                                   </h4>
                                 </div>
                               </div>
                               <div className="flex items-center gap-3">
-                                <span className="px-2 py-1 rounded-[6px] bg-[#111827] border border-[#1f2937] text-[12px] font-bold text-[#f0f0f0]">
+                                <span className="px-2 py-1 rounded-[6px] bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] text-[12px] font-bold text-[var(--color-text)]">
                                   {result.metrics.definition >= 75
                                     ? "Boa"
                                     : "Regular"}
                                 </span>
                                 <ChevronDown
-                                  className={`w-5 h-5 text-[#6b7280] transition-transform duration-300 ${activeAccordion === "def" ? "rotate-180 text-[#f0f0f0]" : ""}`}
+                                  className={`w-5 h-5 text-[var(--color-text-muted)] transition-transform duration-300 ${activeAccordion === "def" ? "rotate-180 text-[var(--color-text)]" : ""}`}
                                 />
                               </div>
                             </button>
@@ -2907,26 +3312,26 @@ export default function App() {
                             >
                               <div className="px-[20px] pb-[20px] space-y-4">
                                 <div className="grid grid-cols-2 gap-3">
-                                  <div className="bg-[#080c10] border border-[rgba(255,255,255,0.04)] rounded-[12px] p-3 text-center">
-                                    <p className="text-[10px] text-[#6b7280] uppercase font-bold mb-1">
+                                  <div className="bg-[var(--color-bg)] border border-[rgba(255,255,255,0.04)] rounded-[12px] p-3 text-center">
+                                    <p className="text-[10px] text-[var(--color-text-muted)] uppercase font-bold mb-1">
                                       Densidade
                                     </p>
-                                    <p className="text-[20px] font-display text-[#f0f0f0]">
+                                    <p className="text-[20px] font-display text-[var(--color-text)]">
                                       {result.metrics.density}%
                                     </p>
                                   </div>
-                                  <div className="bg-[#080c10] border border-[rgba(255,255,255,0.04)] rounded-[12px] p-3 text-center">
-                                    <p className="text-[10px] text-[#6b7280] uppercase font-bold mb-1">
+                                  <div className="bg-[var(--color-bg)] border border-[rgba(255,255,255,0.04)] rounded-[12px] p-3 text-center">
+                                    <p className="text-[10px] text-[var(--color-text-muted)] uppercase font-bold mb-1">
                                       Volume
                                     </p>
-                                    <p className="text-[20px] font-display text-[#f0f0f0]">
+                                    <p className="text-[20px] font-display text-[var(--color-text)]">
                                       {result.metrics.volume}%
                                     </p>
                                   </div>
                                 </div>
 
-                                <div className="bg-[#00ff88]/5 border border-[#00ff88]/10 rounded-[12px] p-4 flex flex-col gap-0 mt-2">
-                                  <p className="text-[11px] font-bold text-[#00ff88] uppercase tracking-widest flex items-center gap-2 mb-3">
+                                <div className="bg-[#2563eb]/5 border border-[#2563eb]/10 rounded-[12px] p-4 flex flex-col gap-0 mt-2">
+                                  <p className="text-[11px] font-bold text-[#2563eb] uppercase tracking-widest flex items-center gap-2 mb-3">
                                     <Award className="w-4 h-4" /> Pontos Fortes
                                   </p>
                                   {result.analysis.strengths
@@ -2936,8 +3341,8 @@ export default function App() {
                                         key={i}
                                         className={`flex items-start gap-2 py-2 ${i < 2 ? "border-b border-[rgba(255,255,255,0.04)]" : ""}`}
                                       >
-                                        <div className="w-1.5 h-1.5 rounded-full bg-[#00ff88] mt-1 shrink-0" />
-                                        <span className="text-[12px] text-[#f0f0f0] leading-tight">
+                                        <div className="w-1.5 h-1.5 rounded-full bg-[#2563eb] mt-1 shrink-0" />
+                                        <span className="text-[12px] text-[var(--color-text)] leading-tight">
                                           {s}
                                         </span>
                                       </div>
@@ -2947,13 +3352,92 @@ export default function App() {
                             </motion.div>
                           </div>
                         )}
+
+                        {/* Posture Section */}
+                        {result.posture && (
+                            <div
+                                className={`rounded-[20px] border transition-all duration-300 overflow-hidden ${activeAccordion === "posture" ? "bg-[var(--color-surface)] shadow-sm border-[var(--color-border)]" : "bg-[var(--color-bg)] border-[rgba(255,255,255,0.06)]"}`}
+                            >
+                                <button
+                                    onClick={() =>
+                                        setActiveAccordion(
+                                            activeAccordion === "posture" ? null : "posture",
+                                        )
+                                    }
+                                    className="w-full p-[20px] flex items-center justify-between group cursor-pointer"
+                                >
+                                    <div className="flex items-center gap-4">
+                                        <div
+                                            className={`w-[36px] h-[36px] rounded-full flex items-center justify-center text-[14px] ${result.posture.detected ? "bg-amber-500/10 text-amber-500" : "bg-green-500/10 text-green-500"}`}
+                                        >
+                                            <ShieldAlert className="w-[18px] h-[18px]" />
+                                        </div>
+                                        <div className="text-left flex flex-col pt-1">
+                                            <h4 className="text-[14px] font-semibold text-[var(--color-text)] leading-tight">
+                                                Análise Postural
+                                            </h4>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-3">
+                                        <span className={`px-2 py-1 rounded-[6px] bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] text-[12px] font-bold ${result.posture.detected ? "text-amber-500" : "text-green-500"}`}>
+                                            {result.posture.detected ? "DESVIO" : "OK"}
+                                        </span>
+                                        <ChevronDown
+                                            className={`w-5 h-5 text-[var(--color-text-muted)] transition-transform duration-300 ${activeAccordion === "posture" ? "rotate-180 text-[var(--color-text)]" : ""}`}
+                                        />
+                                    </div>
+                                </button>
+
+                                <motion.div
+                                    initial={false}
+                                    animate={{
+                                        height: activeAccordion === "posture" ? "auto" : 0,
+                                        opacity: activeAccordion === "posture" ? 1 : 0,
+                                    }}
+                                    className="overflow-hidden"
+                                >
+                                    <div className="px-[20px] pb-[20px] space-y-4">
+                                        {result.posture.detected ? (
+                                            <>
+                                                <div className="bg-amber-500/5 border border-amber-500/10 rounded-[12px] p-4 text-left">
+                                                    <p className="text-[10px] text-amber-600 uppercase font-black tracking-widest mb-2">ALERTA BIOMÉTRICO</p>
+                                                    <h5 className="text-[14px] font-black text-white uppercase italic mb-1">{result.posture.issue}</h5>
+                                                    <p className="text-[12px] text-[var(--color-text-muted)] italic leading-relaxed">"{result.posture.correction}"</p>
+                                                </div>
+                                                
+                                                <div className="bg-[var(--primary)]/5 border border-[var(--primary)]/20 rounded-[16px] p-4 relative overflow-hidden">
+                                                    <p className="text-[10px] text-[var(--primary)] uppercase font-black tracking-widest mb-3">EXERCÍCIO CORRETIVO IA</p>
+                                                    <div className="flex items-start gap-3">
+                                                        <div className="w-10 h-10 rounded-lg bg-[var(--primary)]/20 flex items-center justify-center text-[var(--primary)] shrink-0">
+                                                            <Activity className="w-6 h-6" />
+                                                        </div>
+                                                        <div className="flex-1">
+                                                            <h6 className="text-[13px] font-black text-white uppercase tracking-wider">{result.posture.corrective_exercise.nome}</h6>
+                                                            <div className="flex gap-4 mt-1">
+                                                                <span className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest">{result.posture.corrective_exercise.series}</span>
+                                                                <span className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest">{result.posture.corrective_exercise.repeticoes}</span>
+                                                            </div>
+                                                            <p className="text-[11px] text-[var(--color-text-muted)] mt-2 italic leading-tight">POR QUÊ: {result.posture.corrective_exercise.why}</p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </>
+                                        ) : (
+                                            <div className="bg-green-500/5 border border-green-500/10 rounded-[12px] p-4 text-center">
+                                                <p className="text-[12px] text-green-500 font-bold uppercase tracking-widest">Postura detectada como estável e simétrica.</p>
+                                            </div>
+                                        )}
+                                    </div>
+                                </motion.div>
+                            </div>
+                        )}
                       </motion.div>
 
                       {/* Additional Content (Radar + Comparison) - Only in 'Tudo' */}
                       {analysisFilter === "Tudo" && (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pb-2 px-1">
-                          <div className="bg-[#0d1117] border border-[rgba(255,255,255,0.06)] rounded-[16px] p-5 aspect-square flex flex-col items-center justify-center overflow-hidden">
-                            <h4 className="text-[10px] font-bold uppercase tracking-widest text-[#6b7280]">
+                          <div className="bg-[var(--color-bg)] border border-[rgba(255,255,255,0.06)] rounded-[16px] p-5 aspect-square flex flex-col items-center justify-center overflow-hidden">
+                            <h4 className="text-[10px] font-bold uppercase tracking-widest text-[var(--color-text-muted)]">
                               Radar do Shape
                             </h4>
                             <div className="w-full h-full max-w-full">
@@ -2964,7 +3448,7 @@ export default function App() {
                                   outerRadius="70%"
                                   data={radarData}
                                 >
-                                  <PolarGrid stroke="#1f2937" />
+                                  <PolarGrid stroke="#e2e8f0" />
                                   <PolarAngleAxis
                                     dataKey="subject"
                                     tick={{ fill: "#6b7280", fontSize: 9 }}
@@ -2972,8 +3456,8 @@ export default function App() {
                                   <Radar
                                     name="Shape"
                                     dataKey="A"
-                                    stroke="#00ff88"
-                                    fill="#00ff88"
+                                    stroke="#2563eb"
+                                    fill="#2563eb"
                                     fillOpacity={0.2}
                                   />
                                 </RadarChart>
@@ -2981,15 +3465,15 @@ export default function App() {
                             </div>
                           </div>
 
-                          <div className="bg-[#0d1117] border border-[rgba(255,255,255,0.06)] rounded-[16px] p-5 flex flex-col justify-center space-y-4">
-                            <h4 className="text-[10px] font-bold uppercase tracking-widest text-[#6b7280] flex items-center gap-2">
+                          <div className="bg-[var(--color-bg)] border border-[rgba(255,255,255,0.06)] rounded-[16px] p-5 flex flex-col justify-center space-y-4">
+                            <h4 className="text-[10px] font-bold uppercase tracking-widest text-[var(--color-text-muted)] flex items-center gap-2">
                               <Camera className="w-4 h-4" /> Comparativo
                               Quinzenal
                             </h4>
                             {evolutionHistory.length > 1 ? (
                               <div className="grid grid-cols-2 gap-3">
                                 <div className="space-y-2">
-                                  <div className="aspect-[3/4] rounded-[12px] overflow-hidden border border-[#1f2937]">
+                                  <div className="aspect-[3/4] rounded-[12px] overflow-hidden border border-[var(--color-border)]">
                                     <img
                                       src={
                                         evolutionHistory[
@@ -2999,26 +3483,26 @@ export default function App() {
                                       className="w-full h-full object-cover grayscale opacity-50"
                                     />
                                   </div>
-                                  <p className="text-[9px] font-bold text-[#6b7280] text-center uppercase tracking-tighter">
+                                  <p className="text-[9px] font-bold text-[var(--color-text-muted)] text-center uppercase tracking-tighter">
                                     Anterior
                                   </p>
                                 </div>
                                 <div className="space-y-2">
-                                  <div className="aspect-[3/4] rounded-[12px] overflow-hidden border border-[#00ff88]/50 shadow-[0_0_15px_rgba(0,255,136,0.1)]">
+                                  <div className="aspect-[3/4] rounded-[12px] overflow-hidden border border-[#2563eb]/50 shadow-[0_0_15px_rgba(0,255,136,0.1)]">
                                     <img
                                       src={images.front}
                                       className="w-full h-full object-cover"
                                     />
                                   </div>
-                                  <p className="text-[9px] font-bold text-[#00ff88] text-center uppercase tracking-tighter">
+                                  <p className="text-[9px] font-bold text-[#2563eb] text-center uppercase tracking-tighter">
                                     Atual
                                   </p>
                                 </div>
                               </div>
                             ) : (
-                              <div className="flex-1 flex flex-col items-center justify-center border border-dashed border-[#1f2937] rounded-[12px] p-6">
-                                <Camera className="w-8 h-8 text-[#1f2937] mb-2" />
-                                <p className="text-[10px] text-[#6b7280] uppercase font-bold text-center">
+                              <div className="flex-1 flex flex-col items-center justify-center border border-dashed border-[var(--color-border)] rounded-[12px] p-6">
+                                <Camera className="w-8 h-8 text-[var(--color-text-muted)] mb-2" />
+                                <p className="text-[10px] text-[var(--color-text-muted)] uppercase font-bold text-center">
                                   Aguardando mais fotos...
                                 </p>
                               </div>
@@ -3035,44 +3519,44 @@ export default function App() {
                             <>
                               <button
                                 onClick={handleGenerateCorrectivePlan}
-                                className="w-full h-[60px] bg-gradient-to-br from-[#00ff88] to-[#00cc6a] text-[#080c10] font-display text-[20px] uppercase tracking-wide rounded-[16px] active:scale-[0.97] transition-all shadow-[0_8px_32px_rgba(0,255,136,0.3)] flex items-center justify-center gap-2"
+                                className="w-full h-[60px] bg-gradient-to-br from-[#2563eb] to-[#1d4ed8] text-white font-display text-[20px] uppercase tracking-wide rounded-[16px] active:scale-[0.97] transition-all shadow-[0_8px_32px_rgba(37,99,235,0.2)] flex items-center justify-center gap-2"
                               >
                                 <Zap className="w-5 h-5 fill-current" />
                                 <span>Ver Plano Corretivo</span>
                               </button>
-                              <p className="text-center text-[10px] text-[#6b7280] font-bold uppercase mt-4 tracking-widest">
+                              <p className="text-center text-[10px] text-[var(--color-text-muted)] font-bold uppercase mt-4 tracking-widest">
                                 Plano Integrado de Treino + Dieta
                               </p>
                             </>
                           ) : isGeneratingCorrectivePlan ? (
                             <div className="space-y-4 animate-pulse">
-                              <div className="h-24 bg-[#111827] rounded-[20px] border border-[rgba(255,255,255,0.06)]" />
+                              <div className="h-24 bg-[var(--color-surface)] shadow-sm rounded-[20px] border border-[rgba(255,255,255,0.06)]" />
                               <div className="grid grid-cols-2 gap-3">
-                                <div className="h-32 bg-[#111827] rounded-[20px] border border-[rgba(255,255,255,0.06)]" />
-                                <div className="h-32 bg-[#111827] rounded-[20px] border border-[rgba(255,255,255,0.06)]" />
+                                <div className="h-32 bg-[var(--color-surface)] shadow-sm rounded-[20px] border border-[rgba(255,255,255,0.06)]" />
+                                <div className="h-32 bg-[var(--color-surface)] shadow-sm rounded-[20px] border border-[rgba(255,255,255,0.06)]" />
                               </div>
-                              <div className="h-40 bg-[#111827] rounded-[20px] border border-[rgba(255,255,255,0.06)]" />
-                              <p className="text-center text-[10px] text-[#00ff88] font-bold uppercase tracking-widest">
+                              <div className="h-40 bg-[var(--color-surface)] shadow-sm rounded-[20px] border border-[rgba(255,255,255,0.06)]" />
+                              <p className="text-center text-[10px] text-[#2563eb] font-bold uppercase tracking-widest">
                                 A inteligência artificial está desenhando seu
                                 shape...
                               </p>
                             </div>
                           ) : (
                             correctivePlan && (
-                              <div className="space-y-4 bg-[#111827] border-l-4 border-l-[#00ff88] border-y border-r border-[#1f2937] rounded-[20px] p-5 shadow-[0_10px_30px_rgba(0,0,0,0.5)]">
-                                <h3 className="text-[18px] font-display uppercase text-[#f0f0f0] flex items-center gap-2">
-                                  <Trophy className="w-5 h-5 text-[#00ff88]" />{" "}
+                              <div className="space-y-4 bg-[var(--color-surface)] shadow-sm border-l-4 border-l-[#2563eb] border-y border-r border-[var(--color-border)] rounded-[20px] p-5 shadow-lg">
+                                <h3 className="text-[18px] font-display uppercase text-[var(--color-text)] flex items-center gap-2">
+                                  <Trophy className="w-5 h-5 text-[#2563eb]" />{" "}
                                   Plano Corretivo
                                 </h3>
-                                <div className="p-3 bg-[#080c10] border border-[rgba(255,255,255,0.04)] rounded-[12px]">
-                                  <p className="text-[13px] font-medium text-[#00ff88]">
+                                <div className="p-3 bg-[var(--color-bg)] border border-[rgba(255,255,255,0.04)] rounded-[12px]">
+                                  <p className="text-[13px] font-medium text-[#2563eb]">
                                     {correctivePlan.summary}
                                   </p>
                                 </div>
 
                                 <div className="grid grid-cols-2 gap-3">
-                                  <div className="p-3 bg-[#080c10] border border-[rgba(255,255,255,0.04)] rounded-[12px] flex flex-col gap-0">
-                                    <h4 className="text-[10px] font-bold uppercase text-[#6b7280] tracking-widest mb-2">
+                                  <div className="p-3 bg-[var(--color-bg)] border border-[rgba(255,255,255,0.04)] rounded-[12px] flex flex-col gap-0">
+                                    <h4 className="text-[10px] font-bold uppercase text-[var(--color-text-muted)] tracking-widest mb-2">
                                       Foco do Treino
                                     </h4>
                                     {correctivePlan.trainingFocus.map(
@@ -3081,16 +3565,16 @@ export default function App() {
                                           key={i}
                                           className={`flex items-start gap-2 py-2 ${i < correctivePlan.trainingFocus.length - 1 ? "border-b border-[rgba(255,255,255,0.04)]" : ""}`}
                                         >
-                                          <div className="w-1.5 h-1.5 rounded-full bg-[#00ff88] mt-1 shrink-0" />
-                                          <span className="text-[12px] text-[#f0f0f0] leading-tight">
+                                          <div className="w-1.5 h-1.5 rounded-full bg-[#2563eb] mt-1 shrink-0" />
+                                          <span className="text-[12px] text-[var(--color-text)] leading-tight">
                                             {f}
                                           </span>
                                         </div>
                                       ),
                                     )}
                                   </div>
-                                  <div className="p-3 bg-[#080c10] border border-[rgba(255,255,255,0.04)] rounded-[12px] flex flex-col gap-0">
-                                    <h4 className="text-[10px] font-bold uppercase text-[#6b7280] tracking-widest mb-2">
+                                  <div className="p-3 bg-[var(--color-bg)] border border-[rgba(255,255,255,0.04)] rounded-[12px] flex flex-col gap-0">
+                                    <h4 className="text-[10px] font-bold uppercase text-[var(--color-text-muted)] tracking-widest mb-2">
                                       Dicas de Dieta
                                     </h4>
                                     {correctivePlan.dietFocus.map(
@@ -3099,8 +3583,8 @@ export default function App() {
                                           key={i}
                                           className={`flex items-start gap-2 py-2 ${i < correctivePlan.dietFocus.length - 1 ? "border-b border-[rgba(255,255,255,0.04)]" : ""}`}
                                         >
-                                          <div className="w-1.5 h-1.5 rounded-full bg-[#00ff88] mt-1 shrink-0" />
-                                          <span className="text-[12px] text-[#f0f0f0] leading-tight">
+                                          <div className="w-1.5 h-1.5 rounded-full bg-[#2563eb] mt-1 shrink-0" />
+                                          <span className="text-[12px] text-[var(--color-text)] leading-tight">
                                             {d}
                                           </span>
                                         </div>
@@ -3109,8 +3593,8 @@ export default function App() {
                                   </div>
                                 </div>
 
-                                <div className="p-3 bg-[#080c10] border border-[rgba(255,255,255,0.04)] rounded-[12px] flex flex-col gap-0">
-                                  <h4 className="text-[10px] font-bold uppercase text-[#6b7280] tracking-widest mb-2">
+                                <div className="p-3 bg-[var(--color-bg)] border border-[rgba(255,255,255,0.04)] rounded-[12px] flex flex-col gap-0">
+                                  <h4 className="text-[10px] font-bold uppercase text-[var(--color-text-muted)] tracking-widest mb-2">
                                     Alvos Prioritários
                                   </h4>
                                   {correctivePlan.priorityExercises.map(
@@ -3119,10 +3603,10 @@ export default function App() {
                                         key={i}
                                         className={`flex justify-between items-center text-[12px] py-3 ${i < correctivePlan.priorityExercises.length - 1 ? "border-b border-[rgba(255,255,255,0.04)]" : ""}`}
                                       >
-                                        <strong className="text-[#00ff88] font-bold">
+                                        <strong className="text-[#2563eb] font-bold">
                                           {ex.name}
                                         </strong>
-                                        <span className="text-[#6b7280] text-right">
+                                        <span className="text-[var(--color-text-muted)] text-right">
                                           {ex.reason}
                                         </span>
                                       </div>
@@ -3143,7 +3627,7 @@ export default function App() {
                                         behavior: "smooth",
                                       });
                                     }}
-                                    className="flex-1 py-3 bg-gradient-to-br from-[#00ff88] to-[#00cc6a] text-[#080c10] rounded-[12px] text-center text-[13px] font-bold uppercase transition-all shadow-[0_4px_15px_rgba(0,255,136,0.2)]"
+                                    className="flex-1 py-3 bg-gradient-to-br from-[#2563eb] to-[#1d4ed8] text-white rounded-[12px] text-center text-[13px] font-bold uppercase transition-all shadow-[0_4px_15px_rgba(37,99,235,0.15)]"
                                   >
                                     Ir para o Treino
                                   </button>
@@ -3159,7 +3643,7 @@ export default function App() {
                                         behavior: "smooth",
                                       });
                                     }}
-                                    className="flex-1 py-3 bg-[#080c10] border border-[rgba(255,255,255,0.04)] text-[#f0f0f0] rounded-[12px] text-center text-[13px] font-bold uppercase hover:bg-[#1f2937] transition-all"
+                                    className="flex-1 py-3 bg-[var(--color-bg)] border border-[rgba(255,255,255,0.04)] text-[var(--color-text)] rounded-[12px] text-center text-[13px] font-bold uppercase hover:bg-[var(--color-surface)] shadow-sm transition-all"
                                   >
                                     Ir para a Dieta
                                   </button>
@@ -3172,36 +3656,36 @@ export default function App() {
 
                       {/* Pump Analysis Section */}
                       {result.analysis.pumpAnalysis && (
-                        <div className="p-6 rounded-[20px] bg-[#00ff88]/5 border border-[#00ff88]/10 mt-6 space-y-4">
+                        <div className="p-6 rounded-[20px] bg-[#2563eb]/5 border border-[#2563eb]/10 mt-6 space-y-4">
                           <div className="flex items-center gap-2">
-                            <Zap className="w-5 h-5 text-[#00ff88]" />
-                            <h3 className="text-[20px] font-display text-[#f0f0f0] uppercase tracking-wide">
+                            <Zap className="w-5 h-5 text-[#2563eb]" />
+                            <h3 className="text-[20px] font-display text-[var(--color-text)] uppercase tracking-wide">
                               Análise de Pump
                             </h3>
                           </div>
                           <div className="grid md:grid-cols-3 gap-3">
-                            <div className="p-3 rounded-[12px] bg-[#080c10] border border-[rgba(255,255,255,0.04)]">
-                              <p className="text-[10px] font-bold text-[#6b7280] uppercase mb-1">
+                            <div className="p-3 rounded-[12px] bg-[var(--color-bg)] border border-[rgba(255,255,255,0.04)]">
+                              <p className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase mb-1">
                                 Vascularização
                               </p>
-                              <p className="text-[24px] font-display text-[#00ff88]">
+                              <p className="text-[24px] font-display text-[#2563eb]">
                                 {result.analysis.pumpAnalysis.vascularityScore}
                                 <span className="text-[14px]">/100</span>
                               </p>
                             </div>
-                            <div className="p-3 rounded-[12px] bg-[#080c10] border border-[rgba(255,255,255,0.04)] flex flex-col justify-center">
-                              <p className="text-[10px] font-bold text-[#6b7280] uppercase mb-1">
+                            <div className="p-3 rounded-[12px] bg-[var(--color-bg)] border border-[rgba(255,255,255,0.04)] flex flex-col justify-center">
+                              <p className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase mb-1">
                                 Volume
                               </p>
-                              <p className="text-[14px] font-bold text-[#f0f0f0]">
+                              <p className="text-[14px] font-bold text-[var(--color-text)]">
                                 {result.analysis.pumpAnalysis.volumeIncrease}
                               </p>
                             </div>
-                            <div className="p-3 rounded-[12px] bg-[#080c10] border border-[rgba(255,255,255,0.04)]">
-                              <p className="text-[10px] font-bold text-[#6b7280] uppercase mb-1">
+                            <div className="p-3 rounded-[12px] bg-[var(--color-bg)] border border-[rgba(255,255,255,0.04)]">
+                              <p className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase mb-1">
                                 Comparação
                               </p>
-                              <p className="text-[12px] text-[#f0f0f0] leading-tight">
+                              <p className="text-[12px] text-[var(--color-text)] leading-tight">
                                 {result.analysis.pumpAnalysis.comparison}
                               </p>
                             </div>
@@ -3211,10 +3695,10 @@ export default function App() {
                       
                       {/* Full Markdown Report Section */}
                       {result.fullMarkdownReport && (
-                        <div className="p-6 rounded-[20px] bg-[#080c10] border border-[rgba(255,255,255,0.04)] mt-6 space-y-4">
+                        <div className="p-6 rounded-[20px] bg-[var(--color-bg)] border border-[rgba(255,255,255,0.04)] mt-6 space-y-4">
                           <div className="flex items-center gap-2 mb-4">
-                            <Sparkles className="w-5 h-5 text-[#00ff88]" />
-                            <h3 className="text-[20px] font-display text-[#f0f0f0] uppercase tracking-wide">
+                            <Sparkles className="w-5 h-5 text-[#2563eb]" />
+                            <h3 className="text-[20px] font-display text-[var(--color-text)] uppercase tracking-wide">
                               Relatório Profissional
                             </h3>
                           </div>
@@ -3224,7 +3708,7 @@ export default function App() {
                         </div>
                       )}
                     </div>
-                  )}
+                  ) : null}
                 </div>
               </motion.div>
             )}
@@ -3236,489 +3720,16 @@ export default function App() {
     animate={{ opacity: 1, y: 0 }}
     className="max-w-4xl mx-auto space-y-6 pb-12 px-2"
   >
-    {/* MODE SELECTION */}
-    {!dietPlan && !isGeneratingDiet && !dietMode && (
-      <div className="flex flex-col items-center justify-center p-8 bg-[#0d1117] rounded-[24px] border border-[rgba(255,255,255,0.06)] min-h-[500px]">
-        <div className="w-24 h-24 rounded-full bg-[#00ff88]/5 flex items-center justify-center mb-6">
-          <Utensils className="w-12 h-12 text-[#00ff88]/50" />
-        </div>
-        <h2 className="text-[20px] font-display font-medium text-[#f0f0f0] mb-3 tracking-wide">ESCOLHA SEU CAMINHO</h2>
-        <p className="text-[#6b7280] text-[14px] max-w-sm text-center mb-8">Baseie sua dieta na inteligência artificial do seu shape ou calcule a partir de dados manuais.</p>
-        
-        <div className="grid md:grid-cols-2 gap-4 w-full max-w-2xl">
-          <button 
-            onClick={() => setDietMode('premium')}
-            disabled={!result}
-            className={`relative p-6 rounded-[20px] border flex flex-col items-start transition-all text-left group ${!result ? 'bg-[#0a0f16] border-[#1f2937] opacity-60 cursor-not-allowed' : 'bg-[#0d1117] border-[#00ff88]/30 hover:border-[#00ff88] cursor-pointer'}`}
-          >
-            <div className="absolute top-4 right-4 px-2 py-1 bg-[#00ff88]/10 text-[#00ff88] text-[9px] font-bold uppercase rounded-md tracking-wider">Premium</div>
-            <Sparkles className={`w-8 h-8 mb-4 ${!result ? 'text-[#6b7280]' : 'text-[#00ff88]'}`} />
-            <h3 className="text-[16px] font-display text-[#f0f0f0] mb-1">Dieta Inteligente</h3>
-            <p className="text-[12px] text-[#6b7280]">Baseada na sua análise de shape.</p>
-            {!result && <div className="mt-4 text-[10px] text-[#ffb800] bg-[#ffb800]/10 px-2 py-1 rounded">Faça uma análise de foto primeiro.</div>}
-          </button>
-          
-          <button 
-            onClick={() => setDietMode('free')}
-            className="relative p-6 rounded-[20px] bg-[#0d1117] border border-[rgba(255,255,255,0.1)] hover:border-white/30 flex flex-col items-start transition-all cursor-pointer text-left group"
-          >
-            <div className="absolute top-4 right-4 px-2 py-1 bg-[#1f2937] text-[#f0f0f0] text-[9px] font-bold uppercase rounded-md tracking-wider">Grátis</div>
-            <Calculator className="w-8 h-8 text-[#f0f0f0] mb-4" />
-            <h3 className="text-[16px] font-display text-[#f0f0f0] mb-1">Dieta Personalizada</h3>
-            <p className="text-[12px] text-[#6b7280]">Calculada pelos seus dados.</p>
-          </button>
-        </div>
+    <div className="flex flex-col items-center justify-center p-8 bg-[var(--color-bg)] rounded-[24px] border border-[var(--color-border-subtle)] min-h-[500px]">
+      <div className="w-24 h-24 rounded-full bg-[#ffb800]/10 flex items-center justify-center mb-6">
+        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[#ffb800]"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
       </div>
-    )}
-
-    {/* LOADER */}
-    {isGeneratingDiet && (
-      <div className="flex flex-col items-center justify-center p-12 bg-[#0d1117] rounded-[24px] border border-[rgba(255,255,255,0.06)] min-h-[500px]">
-        <div className="w-[120px] h-[120px] relative flex items-center justify-center mb-6">
-          <div className="absolute inset-0 rounded-full border-4 border-[#00ff88]/10" />
-          <div className="absolute inset-0 rounded-full border-4 border-t-[#00ff88] animate-[spin_1.5s_linear_infinite]" />
-          <Utensils className="w-10 h-10 text-[#00ff88] animate-pulse drop-shadow-[0_0_15px_rgba(0,255,136,0.6)]" />
-        </div>
-        <h2 className="text-[20px] font-display text-[#f0f0f0] animate-pulse tracking-wide">{dietLoadingMessage}</h2>
-        <div className="mt-8 space-y-4 w-full max-w-md opacity-20">
-          <div className="h-20 bg-white/10 rounded-[16px] animate-pulse" />
-          <div className="h-20 bg-white/10 rounded-[16px] animate-pulse delay-75" />
-          <div className="h-20 bg-white/10 rounded-[16px] animate-pulse delay-150" />
-        </div>
-      </div>
-    )}
-
-    {/* PREMIUM FORM */}
-    {!dietPlan && !isGeneratingDiet && dietMode === 'premium' && (
-      <div className="space-y-6 animate-fade-in-up">
-        <button onClick={() => setDietMode(null)} className="flex items-center gap-2 text-[#6b7280] hover:text-[#f0f0f0] text-[12px] font-bold uppercase tracking-wider transition-colors pt-2"><ArrowLeft className="w-4 h-4"/> Voltar</button>
-        
-        {/* Resumo da Análise */}
-        <div className="bg-[#111827] border-l-4 border-l-[#00ff88] border-y border-r border-[#1f2937] rounded-[20px] p-5">
-          <div className="flex justify-between items-start mb-4">
-            <div>
-              <h3 className="text-[14px] font-bold text-[#6b7280] uppercase tracking-wider mb-1">Última Análise Salva</h3>
-              <p className="text-[24px] font-display text-[#f0f0f0] leading-none">{result?.overallScore}<span className="text-[14px] text-[#6b7280]">/100</span></p>
-            </div>
-            <button onClick={() => setActiveTab('analyze')} className="bg-[#1f2937] text-[#f0f0f0] px-3 py-1.5 rounded-[8px] text-[10px] font-bold uppercase">Refazer Análise</button>
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <div className="bg-[#080c10] border border-[rgba(255,255,255,0.04)] rounded-[12px] p-2 text-center">
-              <p className="text-[9px] text-[#6b7280] uppercase font-bold">Categoria</p>
-              <p className="text-[12px] font-bold text-[#00ff88]">{result?.bfEstimate < 10 ? "Atleta" : result?.bfEstimate < 15 ? "Atlético" : result?.bfEstimate < 20 ? "Fitness" : "Evolução"}</p>
-            </div>
-            <div className="bg-[#080c10] border border-[rgba(255,255,255,0.04)] rounded-[12px] p-2 text-center">
-              <p className="text-[9px] text-[#6b7280] uppercase font-bold">BF%</p>
-              <p className="text-[12px] font-bold text-[#f0f0f0]">{result?.bfEstimate}%</p>
-            </div>
-            <div className="bg-[#080c10] border border-[rgba(255,255,255,0.04)] rounded-[12px] p-2 text-center">
-              <p className="text-[9px] text-[#6b7280] uppercase font-bold">Objetivo</p>
-              <p className="text-[12px] font-bold text-[#ffb800]">{result?.recommendations?.dietPhase}</p>
-            </div>
-          </div>
-        </div>
-
-        {/* Inputs adicionais */}
-        <div className="bg-[#0d1117] border border-[rgba(255,255,255,0.06)] rounded-[20px] p-6 space-y-6">
-          <h3 className="text-[18px] font-display text-[#f0f0f0] uppercase tracking-wide flex items-center gap-2"><Settings2 className="w-5 h-5 text-[#00ff88]"/> Ajustes Finos</h3>
-          
-          <div className="grid grid-cols-2 gap-4">
-             <div className="space-y-2">
-               <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Sexo</label>
-               <div className="flex bg-[#111827] rounded-[12px] p-1 border border-[#1f2937]">
-                 <button onClick={() => setDietFormPremium(p => ({...p, gender: 'M'}))} className={`flex-1 py-2 text-[12px] font-bold rounded-[8px] transition-all ${dietFormPremium.gender === 'M' ? 'bg-[#1f2937] text-[#00ff88]' : 'text-[#6b7280]'}`}>MAS</button>
-                 <button onClick={() => setDietFormPremium(p => ({...p, gender: 'F'}))} className={`flex-1 py-2 text-[12px] font-bold rounded-[8px] transition-all ${dietFormPremium.gender === 'F' ? 'bg-[#1f2937] text-[#ffb800]' : 'text-[#6b7280]'}`}>FEM</button>
-               </div>
-             </div>
-             <div className="space-y-2">
-               <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Idade</label>
-               <input type="tel" inputMode="numeric" value={dietFormPremium.age || ''} onChange={(e) => setDietFormPremium(p => ({...p, age: parseInt(e.target.value) || 0}))} className="w-full bg-[#111827] border border-[#1f2937] text-[#f0f0f0] h-[40px] px-3 rounded-[12px] focus:outline-none focus:border-[#00ff88] focus:shadow-[0_0_0_2px_rgba(0,255,136,0.1)] text-[14px]" />
-             </div>
-             <div className="space-y-2">
-               <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Altura (cm)</label>
-               <input type="tel" inputMode="numeric" value={dietFormPremium.height || ''} onChange={(e) => setDietFormPremium(p => ({...p, height: parseInt(e.target.value) || 0}))} className="w-full bg-[#111827] border border-[#1f2937] text-[#f0f0f0] h-[40px] px-3 rounded-[12px] focus:outline-none focus:border-[#00ff88] focus:shadow-[0_0_0_2px_rgba(0,255,136,0.1)] text-[14px]" />
-             </div>
-          </div>
-          
-          <div className="space-y-2">
-            <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Dias de Treino por Semana</label>
-            <div className="flex gap-2">
-              {[1,2,3,4,5,6,7].map(d => (
-                <button key={d} onClick={() => setDietFormPremium(p => ({...p, trainingDays: d}))} className={`flex-1 aspect-square rounded-[10px] font-bold text-[14px] flex items-center justify-center transition-all border ${dietFormPremium.trainingDays === d ? 'bg-[#00ff88]/10 border-[#00ff88] text-[#00ff88]' : 'bg-[#111827] border-[#1f2937] text-[#6b7280] hover:border-white/20'}`}>{d}</button>
-              ))}
-            </div>
-          </div>
-          
-          <div className="space-y-2">
-            <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Restrições Alimentares</label>
-            <div className="flex flex-wrap gap-2">
-              {['Sem glúten', 'Sem lactose', 'Vegano', 'Vegetariano', 'Sem amendoim'].map(r => (
-                <button 
-                  key={r}
-                  onClick={() => setDietFormPremium(p => ({...p, restrictions: p.restrictions.includes(r) ? p.restrictions.filter(x => x !== r) : [...p.restrictions, r]}))}
-                  className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition-all border outline-none ${dietFormPremium.restrictions.includes(r) ? 'bg-[#ffb800]/10 border-[#ffb800] text-[#ffb800]' : 'bg-[#111827] border-[#1f2937] text-[#6b7280] hover:border-white/20'}`}
-                >{r}</button>
-              ))}
-            </div>
-          </div>
-
-          <button onClick={handleGenerateDietPremium} className="w-full h-[56px] bg-gradient-to-br from-[#00ff88] to-[#00cc6a] text-[#080c10] font-display text-[18px] uppercase tracking-wide rounded-[16px] active:scale-[0.98] transition-all shadow-[0_8px_32px_rgba(0,255,136,0.3)] mt-4">
-            Gerar Dieta Premium
-          </button>
-        </div>
-      </div>
-    )}
-
-    {/* FREE FORM */}
-    {!dietPlan && !isGeneratingDiet && dietMode === 'free' && (
-      <div className="space-y-6 animate-fade-in-up">
-        <div className="flex items-center justify-between">
-            <button onClick={() => setDietMode(null)} className="flex items-center gap-2 text-[#6b7280] hover:text-[#f0f0f0] text-[12px] font-bold uppercase tracking-wider transition-colors pt-2"><ArrowLeft className="w-4 h-4"/> Voltar</button>
-            <div className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider bg-[#111827] px-3 py-1 rounded-full border border-[#1f2937]">Passo {dietFreeStep} de 2</div>
-        </div>
-
-        {dietFreeStep === 1 ? (
-          <div className="bg-[#0d1117] border border-[rgba(255,255,255,0.06)] rounded-[20px] p-6 space-y-6">
-            <h3 className="text-[20px] font-display text-[#f0f0f0] uppercase tracking-wide mb-2 flex items-center gap-2">Seus Dados</h3>
-            
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Nome</label>
-                <input type="text" placeholder="Como quer ser chamado?" value={dietFormFree.name} onChange={(e) => setDietFormFree(p => ({...p, name: e.target.value}))} className="w-full bg-[#111827] border border-[#1f2937] text-[#f0f0f0] h-[48px] px-4 rounded-[12px] focus:outline-none focus:border-[#00ff88] focus:shadow-[0_0_0_2px_rgba(0,255,136,0.1)] text-[14px]" />
-              </div>
-              
-              <div className="grid grid-cols-2 gap-4">
-                 <div className="space-y-2">
-                   <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Sexo</label>
-                   <div className="flex bg-[#111827] rounded-[12px] p-1 border border-[#1f2937] h-[48px]">
-                     <button onClick={() => setDietFormFree(p => ({...p, gender: 'M'}))} className={`flex-1 text-[12px] font-bold rounded-[8px] transition-all flex items-center justify-center gap-1 ${dietFormFree.gender === 'M' ? 'bg-[#1f2937] text-[#00ff88]' : 'text-[#6b7280]'}`}>MAS</button>
-                     <button onClick={() => setDietFormFree(p => ({...p, gender: 'F'}))} className={`flex-1 text-[12px] font-bold rounded-[8px] transition-all flex items-center justify-center gap-1 ${dietFormFree.gender === 'F' ? 'bg-[#1f2937] text-[#ffb800]' : 'text-[#6b7280]'}`}>FEM</button>
-                   </div>
-                 </div>
-                 <div className="space-y-2">
-                   <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Idade</label>
-                   <input type="tel" inputMode="numeric" value={dietFormFree.age || ''} onChange={(e) => setDietFormFree(p => ({...p, age: parseInt(e.target.value) || 0}))} className="w-full bg-[#111827] border border-[#1f2937] text-[#f0f0f0] h-[48px] px-4 rounded-[12px] focus:outline-none focus:border-[#00ff88] focus:shadow-[0_0_0_2px_rgba(0,255,136,0.1)] text-[14px] text-center" />
-                 </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                 <div className="space-y-2">
-                   <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Altura (cm)</label>
-                   <input type="tel" inputMode="numeric" value={dietFormFree.height || ''} onChange={(e) => setDietFormFree(p => ({...p, height: parseInt(e.target.value) || 0}))} className="w-full bg-[#111827] border border-[#1f2937] text-[#f0f0f0] h-[48px] px-4 rounded-[12px] focus:outline-none focus:border-[#00ff88] focus:shadow-[0_0_0_2px_rgba(0,255,136,0.1)] text-[14px] text-center" />
-                 </div>
-                 <div className="space-y-2">
-                   <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Peso (kg)</label>
-                   <input type="tel" inputMode="numeric" value={dietFormFree.weight || ''} onChange={(e) => setDietFormFree(p => ({...p, weight: parseInt(e.target.value) || 0}))} className="w-full bg-[#111827] border border-[#1f2937] text-[#f0f0f0] h-[48px] px-4 rounded-[12px] focus:outline-none focus:border-[#00ff88] focus:shadow-[0_0_0_2px_rgba(0,255,136,0.1)] text-[14px] text-center" />
-                 </div>
-              </div>
-            </div>
-
-            <button onClick={() => setDietFreeStep(2)} disabled={!dietFormFree.name || !dietFormFree.age || !dietFormFree.weight || !dietFormFree.height} className="w-full h-[56px] bg-[#f0f0f0] text-[#080c10] font-bold text-[14px] uppercase tracking-wider rounded-[16px] active:scale-[0.98] transition-all disabled:opacity-50 mt-4 flex items-center justify-center gap-2">
-              Próximo Passo <ArrowRight className="w-4 h-4"/>
-            </button>
-          </div>
-        ) : (
-          <div className="bg-[#0d1117] border border-[rgba(255,255,255,0.06)] rounded-[20px] p-6 space-y-6">
-            <h3 className="text-[20px] font-display text-[#f0f0f0] uppercase tracking-wide mb-2 flex items-center gap-2">Preferências</h3>
-            
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Objetivo</label>
-                <div className="grid grid-cols-1 gap-2">
-                  {['PERDER GORDURA', 'GANHAR MASSA', 'MANUTENÇÃO'].map(o => (
-                    <button key={o} onClick={() => setDietFormFree(p => ({...p, objective: o}))} className={`p-4 rounded-[12px] border text-left transition-all ${dietFormFree.objective === o ? 'bg-[#00ff88]/10 border-[#00ff88] text-[#00ff88]' : 'bg-[#111827] border-[#1f2937] text-[#6b7280] hover:border-white/20'}`}>
-                      <span className="font-bold text-[14px] uppercase tracking-wider">{o}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Nível de Atividade</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {['SEDENTÁRIO', 'LEVE', 'MODERADO', 'INTENSO'].map(a => (
-                    <button key={a} onClick={() => setDietFormFree(p => ({...p, activityLevel: a}))} className={`py-3 rounded-[10px] text-[11px] font-bold uppercase transition-all border ${dietFormFree.activityLevel === a ? 'bg-[#00ff88]/10 border-[#00ff88] text-[#00ff88]' : 'bg-[#111827] border-[#1f2937] text-[#6b7280] hover:border-white/20'}`}>
-                      {a}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Refeições por dia</label>
-                <div className="flex gap-2">
-                  {[3,4,5,6].map(n => (
-                    <button key={n} onClick={() => setDietFormFree(p => ({...p, mealsPerDay: n}))} className={`flex-1 aspect-square rounded-[10px] font-bold text-[16px] flex items-center justify-center transition-all border ${dietFormFree.mealsPerDay === n ? 'bg-[#00ff88]/10 border-[#00ff88] text-[#00ff88]' : 'bg-[#111827] border-[#1f2937] text-[#6b7280] hover:border-white/20'}`}>{n}</button>
-                  ))}
-                </div>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Restrições Alimentares</label>
-                <div className="flex flex-wrap gap-2">
-                  {['Sem glúten', 'Sem lactose', 'Vegano', 'Vegetariano', 'Sem amendoim'].map(r => (
-                    <button 
-                      key={r}
-                      onClick={() => setDietFormFree(p => ({...p, restrictions: p.restrictions.includes(r) ? p.restrictions.filter(x => x !== r) : [...p.restrictions, r]}))}
-                      className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition-all border outline-none ${dietFormFree.restrictions.includes(r) ? 'bg-[#ffb800]/10 border-[#ffb800] text-[#ffb800]' : 'bg-[#111827] border-[#1f2937] text-[#6b7280] hover:border-white/20'}`}
-                    >{r}</button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex gap-3 pt-4">
-               <button onClick={() => setDietFreeStep(1)} className="w-[56px] h-[56px] bg-[#111827] border border-[#1f2937] text-[#f0f0f0] rounded-[16px] active:scale-[0.98] transition-all flex items-center justify-center shrink-0">
-                 <ArrowLeft className="w-5 h-5"/>
-               </button>
-               <button onClick={handleGenerateDietFree} disabled={!dietFormFree.objective || !dietFormFree.activityLevel} className="flex-1 h-[56px] bg-gradient-to-br from-[#00ff88] to-[#00cc6a] text-[#080c10] font-display text-[18px] uppercase tracking-wide rounded-[16px] active:scale-[0.98] transition-all shadow-[0_8px_32px_rgba(0,255,136,0.3)] disabled:opacity-50">
-                 Gerar Plano
-               </button>
-            </div>
-          </div>
-        )}
-      </div>
-    )}
-
-    {/* EXIBIÇÃO DO PLANO GERADO */}
-    {dietPlan && (
-      <div className="space-y-6 animate-fade-in-up">
-        {/* Macros Header */}
-        <div className="bg-[#0d1117] border border-[rgba(255,255,255,0.06)] rounded-[24px] p-6 relative overflow-hidden flex flex-col items-center">
-           {dietMode === 'premium' && (
-             <div className="absolute top-0 right-0 w-32 h-32 bg-[#00ff88]/10 blur-3xl rounded-full -mr-16 -mt-16 pointer-events-none" />
-           )}
-           <h3 className="text-[12px] font-bold text-[#6b7280] uppercase tracking-widest mb-6">Suas Metas Diárias</h3>
-           
-           <div className="relative w-[180px] h-[180px] mb-6">
-             <PieChart width={180} height={180}>
-                <Pie
-                  data={[
-                    { name: 'Proteína', value: dietPlan.resumo_metabolico.proteina_g * 4, color: '#00ff88' },
-                    { name: 'Carbo', value: dietPlan.resumo_metabolico.carbo_g * 4, color: '#ffb800' },
-                    { name: 'Gordura', value: dietPlan.resumo_metabolico.gordura_g * 9, color: '#3b82f6' }
-                  ]}
-                  cx={90}
-                  cy={90}
-                  innerRadius={70}
-                  outerRadius={85}
-                  paddingAngle={5}
-                  dataKey="value"
-                  stroke="none"
-                >
-                  {
-                    [
-                      { name: 'Proteína', value: dietPlan.resumo_metabolico.proteina_g * 4, color: '#00ff88' },
-                      { name: 'Carbo', value: dietPlan.resumo_metabolico.carbo_g * 4, color: '#ffb800' },
-                      { name: 'Gordura', value: dietPlan.resumo_metabolico.gordura_g * 9, color: '#3b82f6' }
-                    ].map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))
-                  }
-                </Pie>
-             </PieChart>
-             <div className="absolute inset-0 flex flex-col items-center justify-center pt-2">
-                <span className="text-[36px] font-display text-[#f0f0f0] leading-none tracking-wide">{dietPlan.resumo_metabolico.meta_calorica}</span>
-                <span className="text-[12px] text-[#6b7280] font-bold uppercase tracking-widest">Kcal</span>
-             </div>
-           </div>
-
-           <div className="grid grid-cols-3 gap-6 w-full max-w-sm">
-             <div className="flex flex-col items-center">
-               <div className="w-3 h-3 rounded-full bg-[#00ff88] mb-2" />
-               <span className="text-[10px] text-[#6b7280] uppercase font-bold tracking-widest mb-1">Proteína</span>
-               <span className="text-[18px] font-display text-[#f0f0f0]">{dietPlan.resumo_metabolico.proteina_g}g</span>
-             </div>
-             <div className="flex flex-col items-center">
-               <div className="w-3 h-3 rounded-full bg-[#ffb800] mb-2" />
-               <span className="text-[10px] text-[#6b7280] uppercase font-bold tracking-widest mb-1">Carbo</span>
-               <span className="text-[18px] font-display text-[#f0f0f0]">{dietPlan.resumo_metabolico.carbo_g}g</span>
-             </div>
-             <div className="flex flex-col items-center">
-               <div className="w-3 h-3 rounded-full bg-[#3b82f6] mb-2" />
-               <span className="text-[10px] text-[#6b7280] uppercase font-bold tracking-widest mb-1">Gordura</span>
-               <span className="text-[18px] font-display text-[#f0f0f0]">{dietPlan.resumo_metabolico.gordura_g}g</span>
-             </div>
-           </div>
-        </div>
-
-        {/* Refeições */}
-        <div className="space-y-4">
-          <h3 className="text-[18px] font-display text-[#f0f0f0] uppercase tracking-wide flex items-center gap-2 px-2"><Utensils className="w-5 h-5 text-[#ffb800]"/> Refeições</h3>
-          {dietPlan.refeicoes.map((meal: any, idx: number) => {
-             // Determinar cor baseada na ordem ou horário
-             let accentColor = 'bg-[#00ff88] text-[#00ff88]';
-             if (idx === 0) accentColor = 'bg-[#ffb800] text-[#ffb800]';
-             else if (idx === 1) accentColor = 'bg-[#00ff88] text-[#00ff88]';
-             else if (idx === 2) accentColor = 'bg-[#3b82f6] text-[#3b82f6]';
-             else accentColor = 'bg-[#a855f7] text-[#a855f7]';
-             
-             const isExpanded = expandedMeals[idx];
-
-             return (
-               <div key={idx} className={`bg-[#0d1117] border border-[rgba(255,255,255,0.06)] rounded-[20px] overflow-hidden transition-all duration-300 ${isExpanded ? 'shadow-[0_10px_30px_rgba(0,0,0,0.3)]' : ''}`}>
-                 <button 
-                   onClick={() => setExpandedMeals(p => ({...p, [idx]: !p[idx]}))}
-                   className="w-full p-5 flex items-center justify-between cursor-pointer focus:outline-none"
-                 >
-                   <div className="flex items-center gap-4">
-                     <div className={`px-2 py-1 rounded-[6px] ${accentColor.split(' ')[0]}/10 border ${accentColor.split(' ')[0].replace('bg-', 'border-')}/20`}>
-                       <span className={`text-[12px] font-bold ${accentColor.split(' ')[1]}`}>{meal.horario}</span>
-                     </div>
-                     <div className="text-left">
-                       <h4 className="text-[16px] font-display text-[#f0f0f0]">{meal.nome}</h4>
-                       <p className="text-[12px] text-[#6b7280]">{meal.calorias} kcal</p>
-                     </div>
-                   </div>
-                   <div className="flex items-center gap-4">
-                     <div className="hidden sm:flex items-center gap-3 mr-2">
-                        <span className="text-[10px] text-[#6b7280] font-bold">P: {meal.proteina_g}g</span>
-                        <span className="text-[10px] text-[#6b7280] font-bold">C: {meal.carbo_g}g</span>
-                        <span className="text-[10px] text-[#6b7280] font-bold">G: {meal.gordura_g}g</span>
-                     </div>
-                     <ChevronDown className={`w-5 h-5 text-[#6b7280] transition-transform duration-300 ${isExpanded ? 'rotate-180 text-[#f0f0f0]' : ''}`} />
-                   </div>
-                 </button>
-                 
-                 <AnimatePresence>
-                   {isExpanded && (
-                     <motion.div
-                       initial={{ height: 0, opacity: 0 }}
-                       animate={{ height: "auto", opacity: 1 }}
-                       exit={{ height: 0, opacity: 0 }}
-                       className="overflow-hidden"
-                     >
-                       <div className="px-5 pb-5 pt-0 space-y-2">
-                         <div className="h-px w-full bg-[rgba(255,255,255,0.04)] mb-4" />
-                         {meal.opcoes.map((item: any, i: number) => (
-                           <div key={i} className="flex justify-between items-center p-3 rounded-[12px] bg-[#111827] border border-[#1f2937]">
-                             <div className="flex items-center gap-3">
-                               <div className="w-1.5 h-1.5 rounded-full bg-[#f0f0f0]" />
-                               <span className="text-[14px] text-[#f0f0f0] font-medium">{item.alimento}</span>
-                             </div>
-                             <div className="text-right">
-                               <span className="text-[14px] font-bold text-[#f0f0f0] block">{item.quantidade}</span>
-                               {item.calorias && <span className="text-[10px] text-[#6b7280]">{item.calorias} kcal</span>}
-                             </div>
-                           </div>
-                         ))}
-                       </div>
-                     </motion.div>
-                   )}
-                 </AnimatePresence>
-               </div>
-             )
-          })}
-        </div>
-
-        {/* Dicas de Timing */}
-        {dietPlan.dicas_timing && dietPlan.dicas_timing.length > 0 && (
-          <div className="bg-[#111827] border-l-4 border-l-[#ffb800] border-y border-r border-[#1f2937] rounded-[20px] p-6 space-y-4 shadow-[0_10px_30px_rgba(0,0,0,0.5)]">
-            <h3 className="text-[16px] font-display text-[#f0f0f0] uppercase tracking-wide flex items-center gap-2"><Clock className="w-5 h-5 text-[#ffb800]"/> Dicas de Timing</h3>
-            <div className="space-y-3">
-              {dietPlan.dicas_timing.map((dica: string, i: number) => (
-                <div key={i} className={`flex items-start gap-3 ${i < dietPlan.dicas_timing.length - 1 ? 'pb-3 border-b border-[rgba(255,255,255,0.04)]' : ''}`}>
-                  <div className="w-5 h-5 rounded-full bg-[#ffb800]/10 flex items-center justify-center shrink-0 mt-0.5">
-                    <Zap className="w-3 h-3 text-[#ffb800]" />
-                  </div>
-                  <p className="text-[13px] text-[#f0f0f0] leading-relaxed">{dica}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Observação Especial */}
-        {dietPlan.observacao_especial && (
-           <div className="bg-[#0d1117] border border-[#1f2937] rounded-[20px] p-6">
-             <div className="flex gap-4 items-start">
-               <div className="w-10 h-10 rounded-full bg-[#00ff88]/10 flex items-center justify-center shrink-0"><MessageSquare className="w-5 h-5 text-[#00ff88]" /></div>
-               <p className="text-[14px] text-[#6b7280] italic leading-relaxed pt-2">"{dietPlan.observacao_especial}"</p>
-             </div>
-           </div>
-        )}
-
-        {/* Lista de Compras */}
-        {dietPlan.lista_compras && dietPlan.lista_compras.length > 0 && (
-          <div className={`bg-[#0d1117] border border-[rgba(255,255,255,0.06)] rounded-[20px] overflow-hidden transition-all duration-300 ${expandedShoppingList ? 'shadow-[0_10px_30px_rgba(0,0,0,0.3)]' : ''}`}>
-             <button 
-               onClick={() => setExpandedShoppingList(p => !p)}
-               className="w-full p-5 flex items-center justify-between cursor-pointer focus:outline-none"
-             >
-               <div className="flex items-center gap-4">
-                 <div className="px-2 py-1 rounded-[6px] bg-[#3b82f6]/10 border border-[#3b82f6]/20 flex items-center justify-center">
-                   <ShoppingCart className="w-5 h-5 text-[#3b82f6]" />
-                 </div>
-                 <div className="text-left">
-                   <h4 className="text-[16px] font-display text-[#f0f0f0] uppercase">Lista de Compras</h4>
-                   <p className="text-[12px] text-[#6b7280]">{dietPlan.lista_compras.length} itens</p>
-                 </div>
-               </div>
-               <ChevronDown className={`w-5 h-5 text-[#6b7280] transition-transform duration-300 ${expandedShoppingList ? 'rotate-180 text-[#f0f0f0]' : ''}`} />
-             </button>
-             
-             <AnimatePresence>
-               {expandedShoppingList && (
-                 <motion.div
-                   initial={{ height: 0, opacity: 0 }}
-                   animate={{ height: "auto", opacity: 1 }}
-                   exit={{ height: 0, opacity: 0 }}
-                   className="overflow-hidden"
-                 >
-                   <div className="px-5 pb-5 pt-0 space-y-4">
-                     <div className="h-px w-full bg-[rgba(255,255,255,0.04)] mb-4" />
-                     <div className="flex flex-wrap gap-2">
-                        {dietPlan.lista_compras.map((item: string, i: number) => (
-                           <div key={i} className="px-3 py-1.5 rounded-full bg-[#111827] border border-[#1f2937] text-[#f0f0f0] text-[12px] font-medium">
-                              {item}
-                           </div>
-                        ))}
-                     </div>
-                     <button 
-                       onClick={() => {
-                         navigator.clipboard.writeText(dietPlan.lista_compras.join('\\n'));
-                         alert("Lista copiada para a área de transferência!");
-                       }}
-                       className="w-full h-[48px] bg-[#111827] text-[#f0f0f0] font-bold text-[12px] uppercase tracking-wider rounded-[12px] hover:bg-[#1f2937] border border-[#1f2937] transition-all flex items-center justify-center gap-2 mt-4"
-                     >
-                       <ShoppingCart className="w-4 h-4"/> Copiar Lista
-                     </button>
-                   </div>
-                 </motion.div>
-               )}
-             </AnimatePresence>
-          </div>
-        )}
-
-        {/* Footer info */}
-        <div className="pt-4 text-center">
-          {dietMode === 'premium' ? (
-            <p className="text-[12px] font-bold text-[#00ff88] uppercase tracking-widest"><Sparkles className="w-4 h-4 inline-block mr-1 -mt-1"/> Plano gerado com base na sua análise de shape</p>
-          ) : (
-            <div className="bg-[#080c10] border border-[rgba(255,255,255,0.06)] rounded-[20px] p-6 max-w-sm mx-auto">
-              <h4 className="text-[14px] font-bold text-[#f0f0f0] mb-2 uppercase tracking-wide">Quer mais precisão?</h4>
-              <p className="text-[12px] text-[#6b7280] mb-4">Faça sua análise de shape por IA para receber um plano focado em corrigir suas assimetrias reais.</p>
-              <button onClick={() => setActiveTab('analyze')} className="w-full h-[40px] bg-[#1f2937] text-[#f0f0f0] text-[11px] font-bold uppercase rounded-[10px] hover:bg-[#374151] transition-colors">Fazer Análise de Shape</button>
-            </div>
-          )}
-        </div>
-
-        {/* Floating Regenerate Button */}
-        <button 
-          onClick={() => {
-            setDietPlan(null);
-            setDietMode(null);
-          }} 
-          className="fixed bottom-20 md:bottom-6 right-4 sm:right-6 md:right-8 bg-[#111827] border border-[#1f2937] text-[#f0f0f0] px-4 py-3 rounded-full shadow-[0_10px_30px_rgba(0,0,0,0.5)] z-50 flex items-center gap-2 hover:border-[#6b7280] transition-colors active:scale-95"
-        >
-          <RefreshCw className="w-4 h-4" />
-          <span className="text-[12px] font-bold uppercase tracking-wider">Regerar</span>
-        </button>
-      </div>
-    )}
+      <h2 className="text-[20px] font-display font-medium text-[var(--color-text)] mb-3 tracking-wide">ABA EM MANUTENÇÃO</h2>
+      <p className="text-[var(--color-text-muted)] text-[14px] max-w-sm text-center mb-8">Estamos preparando melhorias exclusivas para a área de Dieta. Em breve teremos novidades para o seu shape!</p>
+    </div>
   </motion.div>
 )}
-`
+
             {activeTab === "training" && (
   <motion.div
     key="training"
@@ -3728,54 +3739,64 @@ export default function App() {
   >
     {/* Workout Completed Status */}
     {completedWorkouts.some(id => id.includes(new Date().toISOString().split('T')[0])) && (
-      <div className="bg-[#00ff88]/10 border border-[#00ff88]/30 rounded-2xl p-4 flex items-center justify-center gap-3">
-        <div className="w-8 h-8 rounded-full bg-[#00ff88] flex items-center justify-center">
-            <Check className="w-5 h-5 text-black" />
+      <div className="bg-[#2563eb]/10 border border-[#2563eb]/30 rounded-2xl p-4 flex items-center justify-center gap-3">
+        <div className="w-8 h-8 rounded-full bg-[#2563eb] flex items-center justify-center">
+            <Check className="w-5 h-5 text-white" />
         </div>
         <div>
-          <h3 className="text-[12px] font-black text-[#00ff88] uppercase tracking-widest">Treino de Hoje Concluído</h3>
-          <p className="text-[10px] text-[#6b7280] uppercase font-bold">Obrigado pelo esforço. Aproveite o descanso e a dieta.</p>
+          <h3 className="text-[12px] font-black text-[#2563eb] uppercase tracking-widest">Treino de Hoje Concluído</h3>
+          <p className="text-[10px] text-[var(--color-text-muted)] uppercase font-bold">Obrigado pelo esforço. Aproveite o descanso e a dieta.</p>
         </div>
       </div>
     )}
 
     {/* SUB-TAB NAV */}
-    <div className="flex bg-[#0d1117] p-1 rounded-[16px] border border-[rgba(255,255,255,0.06)]">
-      <button onClick={() => setTrainingTab('generator')} className={`flex-1 py-3 text-[12px] font-bold uppercase tracking-wider rounded-[12px] transition-all ${trainingTab === 'generator' ? 'bg-[#1f2937] text-white' : 'text-[#6b7280]'}`}>Gerar Plano</button>
-      <button onClick={() => setTrainingTab('my-plan')} className={`flex-1 py-3 text-[12px] font-bold uppercase tracking-wider rounded-[12px] transition-all ${trainingTab === 'my-plan' ? 'bg-[#1f2937] text-white' : 'text-[#6b7280]'}`}>Meu Plano</button>
+    <div className="flex bg-[var(--color-bg)] p-1 rounded-[16px] border border-[rgba(255,255,255,0.06)]">
+      <button onClick={() => setTrainingTab('generator')} className={`flex-1 py-3 text-[12px] font-bold uppercase tracking-wider rounded-[12px] transition-all ${trainingTab === 'generator' ? 'bg-[var(--color-surface)] shadow-sm text-[var(--color-text)]' : 'text-[var(--color-text-muted)]'}`}>Gerar Plano</button>
+      <button onClick={() => setTrainingTab('my-plan')} className={`flex-1 py-3 text-[12px] font-bold uppercase tracking-wider rounded-[12px] transition-all ${trainingTab === 'my-plan' ? 'bg-[var(--color-surface)] shadow-sm text-[var(--color-text)]' : 'text-[var(--color-text-muted)]'}`}>Meu Plano</button>
     </div>
 
     {trainingTab === 'generator' ? (
       <>
     {/* MODE SELECTION */}
     {!trainingPlan && !isGeneratingTraining && !trainingMode && (
-      <div className="flex flex-col items-center justify-center p-8 bg-[#0d1117] rounded-[24px] border border-[rgba(255,255,255,0.06)] min-h-[500px]">
-        <div className="w-24 h-24 rounded-full bg-[#00ff88]/5 flex items-center justify-center mb-6">
-          <Dumbbell className="w-12 h-12 text-[#00ff88]/50" />
+      <div className="flex flex-col items-center justify-center p-8 bg-[var(--color-bg)] rounded-[24px] border border-[rgba(255,255,255,0.06)] min-h-[500px]">
+        <div className="w-24 h-24 rounded-full bg-[#2563eb]/5 flex items-center justify-center mb-6">
+          <Dumbbell className="w-12 h-12 text-[#2563eb]/50" />
         </div>
-        <h2 className="text-[20px] font-display font-medium text-[#f0f0f0] mb-3 tracking-wide">ESCOLHA O TREINO</h2>
-        <p className="text-[#6b7280] text-[14px] max-w-sm text-center mb-8">Treine com inteligência IA baseada no seu shape ou personalize o seu treino manual.</p>
+        <h2 className="text-[20px] font-display font-medium text-[var(--color-text)] mb-3 tracking-wide">ESCOLHA O TREINO</h2>
+        <p className="text-[var(--color-text-muted)] text-[14px] max-w-sm text-center mb-8">Treine com inteligência IA baseada no seu shape ou personalize o seu treino manual.</p>
         
         <div className="grid md:grid-cols-2 gap-4 w-full max-w-2xl">
           <button 
-            onClick={() => setTrainingMode('premium')}
-            className={`relative p-6 rounded-[20px] border flex flex-col items-start transition-all text-left group bg-[#0d1117] border-[#00ff88]/30 hover:border-[#00ff88] cursor-pointer`}
+            onClick={() => {
+              if (!result) {
+                setActiveTab('analyze');
+                setResult(null); // ensure form shows up
+              } else {
+                setTrainingMode('premium');
+              }
+            }}
+            className={`relative p-8 rounded-[24px] border flex flex-col items-start transition-all text-left group bg-[#0a0f16] border-[#2563eb]/30 hover:border-[#2563eb] hover:shadow-[0_0_30px_rgba(37,99,235,0.15)] cursor-pointer overflow-hidden`}
           >
-            <div className="absolute top-4 right-4 px-2 py-1 bg-[#00ff88]/10 text-[#00ff88] text-[9px] font-bold uppercase rounded-md tracking-wider">Premium</div>
-            <Sparkles className={`w-8 h-8 mb-4 ${!result ? 'text-[#6b7280]' : 'text-[#00ff88]'}`} />
-            <h3 className="text-[16px] font-display text-[#f0f0f0] mb-1">Treino Inteligente</h3>
-            <p className="text-[12px] text-[#6b7280]">Baseado na sua análise de shape e assimetrias.</p>
-            {!result && <div className="mt-4 text-[10px] text-[#ffb800] bg-[#ffb800]/10 px-2 py-1 rounded">Faça uma análise de foto primeiro.</div>}
+            <div className="absolute inset-0 bg-gradient-to-br from-[#2563eb]/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+            <div className="absolute top-0 right-0 w-32 h-32 bg-[#2563eb]/10 blur-[40px] pointer-events-none group-hover:bg-[#2563eb]/20 transition-all"></div>
+            
+            <div className="absolute top-5 right-5 px-3 py-1 bg-[#2563eb]/10 text-[#2563eb] border border-[#2563eb]/20 text-[9px] font-black uppercase rounded-full tracking-widest backdrop-blur-sm z-10">AI Powered</div>
+            <Zap className={`w-10 h-10 mb-5 relative z-10 ${!result ? 'text-[var(--color-text-muted)]' : 'text-[#2563eb] group-hover:animate-pulse'}`} />
+            <h3 className="text-[18px] font-black uppercase tracking-widest text-white mb-2 relative z-10">Smart Training Engine</h3>
+            <p className="text-[12px] text-white/50 leading-relaxed relative z-10">Plano neural adaptativo gerado focado na sua biometria e nível atual de recuperação.</p>
+            {!result && <div className="mt-5 text-[10px] text-[#ffb800] bg-[#ffb800]/10 border border-[#ffb800]/20 px-3 py-2 rounded-xl w-full text-center relative z-10 font-bold uppercase tracking-widest flex justify-center items-center gap-2"><Target className="w-3 h-3"/> Requer Escaneamento</div>}
           </button>
           
           <button 
             onClick={() => setTrainingMode('free')}
-            className="relative p-6 rounded-[20px] bg-[#0d1117] border border-[rgba(255,255,255,0.1)] hover:border-white/30 flex flex-col items-start transition-all cursor-pointer text-left group"
+            className="relative p-8 rounded-[24px] bg-[var(--color-surface)] border border-[var(--color-border)] hover:border-black/30 flex flex-col items-start transition-all cursor-pointer text-left group overflow-hidden"
           >
-            <div className="absolute top-4 right-4 px-2 py-1 bg-[#1f2937] text-[#f0f0f0] text-[9px] font-bold uppercase rounded-md tracking-wider">Grátis</div>
-            <Dumbbell className="w-8 h-8 text-[#f0f0f0] mb-4" />
-            <h3 className="text-[16px] font-display text-[#f0f0f0] mb-1">Treino Personalizado</h3>
-            <p className="text-[12px] text-[#6b7280]">Calculado pelos seus dados manuais.</p>
+            <div className="absolute top-5 right-5 px-3 py-1 bg-[var(--color-surface)] shadow-sm text-[var(--color-text-muted)] border border-[var(--color-border)] text-[9px] font-black uppercase rounded-full tracking-widest z-10">Manual</div>
+            <Dumbbell className="w-10 h-10 text-[var(--color-text)] mb-5 relative z-10" />
+            <h3 className="text-[18px] font-black uppercase tracking-widest text-[var(--color-text)] mb-2 relative z-10">Construtor Padrão</h3>
+            <p className="text-[12px] text-[var(--color-text-muted)] leading-relaxed relative z-10">Protocolo hipertrófico construído através de input de dados manuais (altura, peso, objetivo).</p>
           </button>
         </div>
       </div>
@@ -3783,12 +3804,12 @@ export default function App() {
 
     {/* Redirect to My Plan if plan exists */}
     {trainingPlan && !isGeneratingTraining && !trainingMode && (
-         <div className="flex flex-col items-center justify-center p-8 bg-[#0d1117] rounded-[24px] border border-[rgba(255,255,255,0.06)] min-h-[400px]">
-             <h2 className="text-[20px] font-display font-medium text-[#f0f0f0] mb-2 uppercase tracking-tight">Você já tem um plano!</h2>
-             <p className="text-[14px] text-[#6b7280] mb-8 text-center max-w-xs">Deseja seguir seu plano atual ou criar uma nova periodização baseada nos dados atuais?</p>
+         <div className="flex flex-col items-center justify-center p-8 bg-[var(--color-bg)] rounded-[24px] border border-[rgba(255,255,255,0.06)] min-h-[400px]">
+             <h2 className="text-[20px] font-display font-medium text-[var(--color-text)] mb-2 uppercase tracking-tight">Você já tem um plano!</h2>
+             <p className="text-[14px] text-[var(--color-text-muted)] mb-8 text-center max-w-xs">Deseja seguir seu plano atual ou criar uma nova periodização baseada nos dados atuais?</p>
              <div className="flex flex-col gap-3 w-full max-w-xs">
-               <button onClick={() => setTrainingTab('my-plan')} className="w-full h-[52px] bg-[var(--color-neon)] text-[#080c10] rounded-2xl font-black uppercase text-[12px] shadow-[0_8px_20px_rgba(0,255,136,0.2)]">Continuar Plano Atual</button>
-               <button onClick={() => setTrainingMode('premium')} className="w-full h-[52px] bg-white/5 border border-white/10 text-white rounded-2xl font-black uppercase text-[12px] hover:bg-white/10 transition-all">Regerar Novo Plano (IA)</button>
+               <button onClick={() => setTrainingTab('my-plan')} className="w-full h-[52px] bg-[var(--color-neon)] text-white rounded-2xl font-black uppercase text-[12px] shadow-[0_8px_20px_rgba(37,99,235,0.15)]">Continuar Plano Atual</button>
+               <button onClick={() => setTrainingMode('premium')} className="w-full h-[52px] bg-[var(--color-overlay)] border border-[var(--color-border)] text-[var(--color-text)] rounded-2xl font-black uppercase text-[12px] hover:bg-[var(--color-border)] transition-all">Regerar Novo Plano (IA)</button>
              </div>
          </div>
     )}
@@ -3796,79 +3817,90 @@ export default function App() {
     {/* PREMIUM FORM */}
     {!isGeneratingTraining && trainingMode === 'premium' && (
       <div className="space-y-6 animate-fade-in-up">
-        <button onClick={() => setTrainingMode(null)} className="flex items-center gap-2 text-[#6b7280] hover:text-[#f0f0f0] text-[12px] font-bold uppercase tracking-wider transition-colors pt-2"><ArrowLeft className="w-4 h-4"/> Voltar</button>
+        <button onClick={() => setTrainingMode(null)} className="flex items-center gap-2 text-[var(--color-text-muted)] hover:text-[var(--color-text)] text-[12px] font-bold uppercase tracking-wider transition-colors pt-2"><ArrowLeft className="w-4 h-4"/> Voltar</button>
         
         {/* Resumo da Análise */}
-        <div className="bg-[#111827] border-l-4 border-l-[#00ff88] border-y border-r border-[#1f2937] rounded-[20px] p-5">
+        <div className="bg-[var(--color-surface)] shadow-sm border-l-4 border-l-[#2563eb] border-y border-r border-[var(--color-border)] rounded-[20px] p-5">
           <div className="flex justify-between items-start mb-4">
             <div>
-              <h3 className="text-[14px] font-bold text-[#6b7280] uppercase tracking-wider mb-1">Última Análise Salva</h3>
-              <p className="text-[24px] font-display text-[#f0f0f0] leading-none">{result?.overallScore}<span className="text-[14px] text-[#6b7280]">/100</span></p>
+              <h3 className="text-[14px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider mb-1">Última Análise Salva</h3>
+              <p className="text-[24px] font-display text-[var(--color-text)] leading-none">{result?.overallScore}<span className="text-[14px] text-[var(--color-text-muted)]">/100</span></p>
             </div>
-            <button onClick={() => setActiveTab('analyze')} className="bg-[#1f2937] text-[#f0f0f0] px-3 py-1.5 rounded-[8px] text-[10px] font-bold uppercase">Refazer Análise</button>
+            <button onClick={() => setActiveTab('analyze')} className="bg-[var(--color-surface)] shadow-sm text-[var(--color-text)] px-3 py-1.5 rounded-[8px] text-[10px] font-bold uppercase">Refazer Análise</button>
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <div className="bg-[#080c10] border border-[rgba(255,255,255,0.04)] rounded-[12px] p-2 text-center">
-              <p className="text-[9px] text-[#6b7280] uppercase font-bold">BF%</p>
-              <p className="text-[12px] font-bold text-[#f0f0f0]">{result?.bfEstimate}%</p>
+            <div className="bg-[var(--color-bg)] border border-[rgba(255,255,255,0.04)] rounded-[12px] p-2 text-center">
+              <p className="text-[9px] text-[var(--color-text-muted)] uppercase font-bold">BF%</p>
+              <p className="text-[12px] font-bold text-[var(--color-text)]">{result?.bfEstimate}%</p>
             </div>
-            <div className="bg-[#080c10] border border-[rgba(255,255,255,0.04)] rounded-[12px] p-2 text-center">
-              <p className="text-[9px] text-[#6b7280] uppercase font-bold">Objetivo</p>
+            <div className="bg-[var(--color-bg)] border border-[rgba(255,255,255,0.04)] rounded-[12px] p-2 text-center">
+              <p className="text-[9px] text-[var(--color-text-muted)] uppercase font-bold">Objetivo</p>
               <p className="text-[12px] font-bold text-[#ffb800]">{result?.recommendations?.dietPhase}</p>
             </div>
           </div>
         </div>
 
         {/* Inputs */}
-        <div className="bg-[#0d1117] border border-[rgba(255,255,255,0.06)] rounded-[20px] p-6 space-y-6">
-          <h3 className="text-[18px] font-display text-[#f0f0f0] uppercase tracking-wide flex items-center gap-2"><Settings2 className="w-5 h-5 text-[#00ff88]"/> Ajustes de Treino</h3>
+        <div className="bg-[var(--color-bg)] border border-[rgba(255,255,255,0.06)] rounded-[20px] p-6 space-y-6">
+          <h3 className="text-[18px] font-display text-[var(--color-text)] uppercase tracking-wide flex items-center gap-2"><Settings2 className="w-5 h-5 text-[#2563eb]"/> Ajustes de Treino</h3>
           
           <div className="space-y-2">
-            <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Nome do Plano</label>
+            <label className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider">Nome do Plano</label>
             <input 
               type="text" 
               value={trainingFormPremium.planName}
               onChange={(e) => setTrainingFormPremium(p => ({...p, planName: e.target.value}))}
               placeholder="Ex: Treino Mutante, Foco Verão..."
-              className="w-full bg-[#111827] border border-[#1f2937] rounded-[12px] px-4 py-3 focus:outline-none focus:border-[#00ff88] text-[14px] text-[#f0f0f0]"
+              className="w-full bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] rounded-[12px] px-4 py-3 focus:outline-none focus:border-[#2563eb] text-[14px] text-[var(--color-text)]"
             />
           </div>
 
           <div className="space-y-2">
-            <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Músculo com Foco Extra (Opcional)</label>
+            <label className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider">Músculo com Foco Extra (Opcional)</label>
             <input 
               type="text" 
               value={trainingFormPremium.focusMuscle}
               onChange={(e) => setTrainingFormPremium(p => ({...p, focusMuscle: e.target.value}))}
               placeholder="Ex: Peitoral superior, Panturrilhas..."
-              className="w-full bg-[#111827] border border-[#1f2937] rounded-[12px] px-4 py-3 focus:outline-none focus:border-[#00ff88] text-[14px] text-[#f0f0f0]"
+              className="w-full bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] rounded-[12px] px-4 py-3 focus:outline-none focus:border-[#2563eb] text-[14px] text-[var(--color-text)]"
             />
-            <p className="text-[10px] text-[#6b7280]">A IA ainda fará a correção baseada na sua foto, mas dará ênfase extra aqui.</p>
+            <p className="text-[10px] text-[var(--color-text-muted)]">A IA ainda fará a correção baseada na sua foto, mas dará ênfase extra aqui.</p>
           </div>
 
            <div className="space-y-2">
-            <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Dias por Semana</label>
+            <label className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider">Dias por Semana</label>
             <div className="flex gap-2">
               {[2,3,4,5,6].map(d => (
-                <button key={d} onClick={() => setTrainingFormPremium(p => ({...p, trainingDays: d}))} className={`flex-1 aspect-square rounded-[10px] font-bold text-[14px] flex items-center justify-center transition-all border ${trainingFormPremium.trainingDays === d ? 'bg-[#00ff88]/10 border-[#00ff88] text-[#00ff88]' : 'bg-[#111827] border-[#1f2937] text-[#6b7280] hover:border-white/20'}`}>{d}</button>
+                <button key={d} onClick={() => setTrainingFormPremium(p => ({...p, trainingDays: d}))} className={`flex-1 aspect-square rounded-[10px] font-bold text-[14px] flex items-center justify-center transition-all border ${trainingFormPremium.trainingDays === d ? 'bg-[#2563eb]/10 border-[#2563eb] text-[#2563eb]' : 'bg-[var(--color-surface)] shadow-sm border-[var(--color-border)] text-[var(--color-text-muted)] hover:border-black/20'}`}>{d}</button>
               ))}
             </div>
           </div>
 
           <div className="space-y-2">
-            <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Equipamento</label>
+            <label className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider">Equipamento</label>
             <div className="flex flex-wrap gap-2">
               {['Barra/Anilhas', 'Halteres', 'Máquinas', 'Polia', 'Peso Corporal'].map(e => (
                 <button 
                   key={e}
                   onClick={() => setTrainingFormPremium(p => ({...p, equipment: p.equipment.includes(e) ? p.equipment.filter(x => x !== e) : [...p.equipment, e]}))}
-                  className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition-all border outline-none ${trainingFormPremium.equipment.includes(e) ? 'bg-[#00ff88]/10 border-[#00ff88] text-[#00ff88]' : 'bg-[#111827] border-[#1f2937] text-[#6b7280] hover:border-white/20'}`}
+                  className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition-all border outline-none ${trainingFormPremium.equipment.includes(e) ? 'bg-[#2563eb]/10 border-[#2563eb] text-[#2563eb]' : 'bg-[var(--color-surface)] shadow-sm border-[var(--color-border)] text-[var(--color-text-muted)] hover:border-black/20'}`}
                 >{e}</button>
               ))}
             </div>
           </div>
 
-          <button onClick={handleGenerateTrainingPremium} className="w-full h-[56px] bg-gradient-to-br from-[#00ff88] to-[#00cc6a] text-[#080c10] font-display text-[18px] uppercase tracking-wide rounded-[16px] active:scale-[0.98] transition-all shadow-[0_8px_32px_rgba(0,255,136,0.3)] mt-4">
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider">Motor da IA (Velocidade vs Qualidade)</label>
+            <div className="flex bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] rounded-[12px] p-1">
+              <button onClick={() => setTrainingFormPremium(p => ({...p, generationModel: 'best'}))} className={`flex-1 py-2.5 text-[12px] font-bold rounded-[8px] transition-all flex items-center justify-center gap-2 ${trainingFormPremium.generationModel === 'best' ? 'bg-[var(--color-surface)] shadow-sm text-purple-400' : 'text-[var(--color-text-muted)]'}`}><Sparkles className="w-4 h-4"/> MELHOR IA</button>
+              <button onClick={() => setTrainingFormPremium(p => ({...p, generationModel: 'fast'}))} className={`flex-1 py-2.5 text-[12px] font-bold rounded-[8px] transition-all flex items-center justify-center gap-2 ${trainingFormPremium.generationModel === 'fast' ? 'bg-[var(--color-surface)] shadow-sm text-[#2563eb]' : 'text-[var(--color-text-muted)]'}`}><Zap className="w-4 h-4"/> RÁPIDO</button>
+            </div>
+            <p className="text-[10px] text-[var(--color-text-muted)]">
+              {trainingFormPremium.generationModel === 'fast' ? 'Rápido (cerca de 5-10 segundos)' : 'Qualidade máxima da IA Pro (pode levar 30-60 segundos)'}
+            </p>
+          </div>
+
+          <button onClick={handleGenerateTrainingPremium} className="w-full h-[56px] bg-gradient-to-br from-[#2563eb] to-[#1d4ed8] text-white font-display text-[18px] uppercase tracking-wide rounded-[16px] active:scale-[0.98] transition-all shadow-[0_8px_32px_rgba(37,99,235,0.2)] mt-4">
             Gerar Treino
           </button>
         </div>
@@ -3878,19 +3910,19 @@ export default function App() {
     {/* FREE FORM */}
     {!isGeneratingTraining && trainingMode === 'free' && (
       <div className="space-y-6 animate-fade-in-up">
-        <button onClick={() => setTrainingMode(null)} className="flex items-center gap-2 text-[#6b7280] hover:text-[#f0f0f0] text-[12px] font-bold uppercase tracking-wider transition-colors pt-2"><ArrowLeft className="w-4 h-4"/> Voltar</button>
+        <button onClick={() => setTrainingMode(null)} className="flex items-center gap-2 text-[var(--color-text-muted)] hover:text-[var(--color-text)] text-[12px] font-bold uppercase tracking-wider transition-colors pt-2"><ArrowLeft className="w-4 h-4"/> Voltar</button>
 
-        <div className="bg-[#0d1117] border border-[rgba(255,255,255,0.06)] rounded-[20px] p-6 space-y-4">
-          <h3 className="text-[18px] font-display text-[#f0f0f0] uppercase tracking-wide flex items-center gap-2"><Dumbbell className="w-5 h-5 text-[#3b82f6]"/> Criar Treino Manual</h3>
+        <div className="bg-[var(--color-bg)] border border-[rgba(255,255,255,0.06)] rounded-[20px] p-6 space-y-4">
+          <h3 className="text-[18px] font-display text-[var(--color-text)] uppercase tracking-wide flex items-center gap-2"><Dumbbell className="w-5 h-5 text-[#3b82f6]"/> Criar Treino Manual</h3>
           
-          <input type="text" placeholder="Nome do exercício" className="w-full p-4 rounded-[12px] bg-[#111827] border border-[#1f2937] text-white" 
+          <input type="text" placeholder="Nome do exercício" className="w-full p-4 rounded-[12px] bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] text-[var(--color-text)]" 
             onChange={(e) => setTrainingFormFree(p => ({...p, manualExercise: e.target.value}))} />
           <div className="grid grid-cols-2 gap-4">
-            <input type="text" placeholder="Séries" className="p-4 rounded-[12px] bg-[#111827] border border-[#1f2937] text-white" 
+            <input type="text" placeholder="Séries" className="p-4 rounded-[12px] bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] text-[var(--color-text)]" 
                 onChange={(e) => setTrainingFormFree(p => ({...p, manualSeries: e.target.value}))} />
-            <input type="text" placeholder="Repetições" className="p-4 rounded-[12px] bg-[#111827] border border-[#1f2937] text-white" 
+            <input type="text" placeholder="Repetições" className="p-4 rounded-[12px] bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] text-[var(--color-text)]" 
                 onChange={(e) => setTrainingFormFree(p => ({...p, manualReps: e.target.value}))} />
-            <select className="col-span-2 p-4 rounded-[12px] bg-[#111827] border border-[#1f2937] text-white" onChange={(e) => setTrainingFormFree(p => ({...p, manualDay: e.target.value}))}>
+            <select className="col-span-2 p-4 rounded-[12px] bg-[var(--color-surface)] shadow-sm border border-[var(--color-border)] text-[var(--color-text)]" onChange={(e) => setTrainingFormFree(p => ({...p, manualDay: e.target.value}))}>
                 <option value="Segunda">Segunda-feira</option>
                 <option value="Terça">Terça-feira</option>
                 <option value="Quarta">Quarta-feira</option>
@@ -3913,11 +3945,11 @@ export default function App() {
                  newPlan.dias[dayIndex].exercicios.push(newExercise);
              }
              setTrainingPlan(newPlan);
-           }} className="w-full h-[56px] bg-[#1f2937] text-[#f0f0f0] font-display text-[16px] uppercase tracking-wide rounded-[16px] transition-all hover:bg-[#2d3748]">
+           }} className="w-full h-[56px] bg-[var(--color-surface)] shadow-sm text-[var(--color-text)] font-display text-[16px] uppercase tracking-wide rounded-[16px] transition-all hover:bg-[var(--color-surface-hover)]">
             Adicionar Exercício
           </button>
           
-           <button onClick={() => setTrainingMode(null)} className="w-full h-[56px] bg-gradient-to-br from-[#00ff88] to-[#00cc6a] text-[#080c10] font-display text-[18px] uppercase tracking-wide rounded-[16px] active:scale-[0.98] transition-all shadow-[0_8px_32px_rgba(0,255,136,0.3)] mt-4">
+           <button onClick={() => setTrainingMode(null)} className="w-full h-[56px] bg-gradient-to-br from-[#2563eb] to-[#1d4ed8] text-white font-display text-[18px] uppercase tracking-wide rounded-[16px] active:scale-[0.98] transition-all shadow-[0_8px_32px_rgba(37,99,235,0.2)] mt-4">
             Finalizar Treino
           </button>
         </div>
@@ -3926,13 +3958,13 @@ export default function App() {
 
     {/* LOADER */}
     {isGeneratingTraining && (
-      <div className="flex flex-col items-center justify-center p-12 bg-[#0d1117] rounded-[24px] border border-[rgba(255,255,255,0.06)] min-h-[500px]">
+      <div className="flex flex-col items-center justify-center p-12 bg-[var(--color-bg)] rounded-[24px] border border-[rgba(255,255,255,0.06)] min-h-[500px]">
         <div className="w-[120px] h-[120px] relative flex items-center justify-center mb-6">
-          <div className="absolute inset-0 rounded-full border-4 border-[#00ff88]/10" />
-          <div className="absolute inset-0 rounded-full border-4 border-t-[#00ff88] animate-[spin_1.5s_linear_infinite]" />
-          <Dumbbell className="w-10 h-10 text-[#00ff88] animate-pulse drop-shadow-[0_0_15px_rgba(0,255,136,0.6)]" />
+          <div className="absolute inset-0 rounded-full border-4 border-[#2563eb]/10" />
+          <div className="absolute inset-0 rounded-full border-4 border-t-[#2563eb] animate-[spin_1.5s_linear_infinite]" />
+          <Dumbbell className="w-10 h-10 text-[#2563eb] animate-pulse drop-shadow-[0_0_15px_rgba(0,255,136,0.6)]" />
         </div>
-        <h2 className="text-[20px] font-display text-[#f0f0f0] animate-pulse tracking-wide">{trainingLoadingMessage}</h2>
+        <h2 className="text-[20px] font-display text-[var(--color-text)] animate-pulse tracking-wide">{trainingLoadingMessage}</h2>
       </div>
     )}
       </>
@@ -3941,16 +3973,16 @@ export default function App() {
     <div className="space-y-6 animate-fade-in-up">
         {trainingPlan ? (
             <div className="space-y-6">
-                <div className="bg-[#0d1117] border border-white/5 rounded-[28px] p-6 shadow-xl relative overflow-hidden">
+                <div className="bg-[var(--color-bg)] border border-[var(--color-border-subtle)] rounded-[28px] p-6 shadow-xl relative overflow-hidden">
                     <div className="absolute inset-0 bg-gradient-to-br from-[var(--color-neon)]/5 to-transparent pointer-events-none hover:opacity-70 transition-opacity duration-500"></div>
                     <div className="flex justify-between items-center mb-6 relative z-10">
                       <div className="space-y-1">
-                        <h2 className="text-[18px] font-display text-white uppercase tracking-wider">{trainingPlan.nome_do_plano || `Metodologia ${trainingPlan.divisao}`}</h2>
-                        <h3 className="text-[10px] font-black text-[#6b7280] uppercase tracking-widest mt-1">Foco de Hoje</h3>
+                        <h2 className="text-[18px] font-display text-[var(--color-text)] uppercase tracking-wider">{trainingPlan.nome_do_plano || `Metodologia ${trainingPlan.divisao}`}</h2>
+                        <h3 className="text-[10px] font-black text-[var(--color-text-muted)] uppercase tracking-widest mt-1">Foco de Hoje</h3>
                         <p className="text-[14px] text-[var(--color-neon)] font-black uppercase tracking-widest">{trainingPlan.dias[trainingDayIndex].musculo_foco}</p>
                       </div>
                       <div className="flex flex-col items-end gap-2">
-                        <button onClick={() => setIsEditing(!isEditing)} className="p-2 bg-white/5 rounded-xl text-[#6b7280] hover:text-white transition-colors">
+                        <button onClick={() => setIsEditing(!isEditing)} className="p-2 bg-[var(--color-overlay)] rounded-xl text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors">
                           <Settings2 className="w-5 h-5" />
                         </button>
                       </div>
@@ -3958,11 +3990,11 @@ export default function App() {
 
                     {/* Overall Progress Bar */}
                     <div className="space-y-2 mb-6">
-                      <div className="flex justify-between text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">
+                      <div className="flex justify-between text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider">
                         <span>Progresso do Treino</span>
                         <span>0/{trainingPlan.dias[trainingDayIndex].exercicios.length} concluídos</span>
                       </div>
-                      <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
+                      <div className="h-1.5 w-full bg-[var(--color-overlay)] rounded-full overflow-hidden">
                         <div className="h-full bg-[var(--color-neon)] transition-all" style={{ width: '0%' }}></div>
                       </div>
                     </div>
@@ -3970,10 +4002,10 @@ export default function App() {
                     <div className="flex gap-2 overflow-x-auto pb-4 no-scrollbar relative z-10">
                       {trainingPlan.dias.map((dia: any, i: number) => (
                           <button key={i} onClick={() => setTrainingDayIndex(i)} 
-                            className={`flex-shrink-0 flex flex-col items-center justify-center gap-1 w-[88px] h-[80px] rounded-[24px] transition-all relative overflow-hidden flex-none snap-center ${trainingDayIndex === i ? 'bg-gradient-to-br from-[var(--color-neon)] to-[#00cc66] border-none shadow-[0_8px_25px_rgba(0,255,136,0.3)] scale-105 z-10' : 'bg-[#161b22] border border-white/5 hover:bg-white/5 opacity-70'}`}
+                            className={`flex-shrink-0 flex flex-col items-center justify-center gap-1 w-[88px] h-[80px] rounded-[24px] transition-all relative overflow-hidden flex-none snap-center ${trainingDayIndex === i ? 'bg-gradient-to-br from-[var(--color-neon)] to-[#3b82f6] border-none shadow-[0_8px_25px_rgba(37,99,235,0.2)] scale-105 z-10' : 'bg-[var(--color-surface)] border border-[var(--color-border-subtle)] hover:bg-[var(--color-overlay)] opacity-70'}`}
                           >
-                           <span className={`text-[9px] uppercase tracking-[0.2em] font-black ${trainingDayIndex === i ? 'text-[#080c10]/60' : 'text-[#6b7280]'}`}>Treino</span>
-                           <span className={`text-2xl font-black italic ${trainingDayIndex === i ? 'text-[#080c10]' : 'text-white/50'}`}>{String.fromCharCode(65 + i)}</span>
+                           <span className={`text-[9px] uppercase tracking-[0.2em] font-black ${trainingDayIndex === i ? 'text-white/60' : 'text-[var(--color-text-muted)]'}`}>Treino</span>
+                           <span className={`text-2xl font-black italic ${trainingDayIndex === i ? 'text-white' : 'text-[var(--color-text)]/50'}`}>{String.fromCharCode(65 + i)}</span>
                           </button>
                       ))}
                     </div>
@@ -3981,9 +4013,9 @@ export default function App() {
 
                 <div className="space-y-4">
                     <div className="flex items-center justify-between px-2">
-                    <h3 className="text-[12px] font-bold text-[#6b7280] uppercase tracking-widest">Série {String.fromCharCode(65 + trainingDayIndex)}: {trainingPlan.dias[trainingDayIndex].exercicios.length} Exercícios</h3>
+                    <h3 className="text-[12px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest">Série {String.fromCharCode(65 + trainingDayIndex)}: {trainingPlan.dias[trainingDayIndex].exercicios.length} Exercícios</h3>
                     <div className="flex gap-2">
-                      <button onClick={() => startWorkout(trainingPlan.dias[trainingDayIndex])} className="text-[11px] font-black text-[#080c10] uppercase tracking-wider bg-[var(--color-neon)] px-6 py-2.5 rounded-xl flex items-center gap-2 hover:opacity-90 transition-all shadow-[0_0_15px_rgba(0,255,136,0.3)]">
+                      <button onClick={() => startWorkout(trainingPlan.dias[trainingDayIndex])} className="text-[11px] font-black text-white uppercase tracking-wider bg-[var(--color-neon)] px-6 py-2.5 rounded-xl flex items-center gap-2 hover:opacity-90 transition-all shadow-[0_0_15px_rgba(37,99,235,0.2)]">
                         <Play className="w-4 h-4 fill-current"/> INICIAR TREINO
                       </button>
                     </div>
@@ -3995,7 +4027,7 @@ export default function App() {
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: i * 0.05 }}
                         key={i} 
-                        className="group relative bg-[#0d1117] border border-white/5 rounded-[24px] p-5 hover:border-[var(--color-neon)]/30 transition-all cursor-pointer overflow-hidden shadow-lg"
+                        className="group relative bg-[var(--color-bg)] border border-[var(--color-border-subtle)] rounded-[24px] p-5 hover:border-[var(--color-neon)]/30 transition-all cursor-pointer overflow-hidden shadow-lg"
                       >
                           <div className="flex justify-between items-start mb-3 relative z-10">
                             <div className="space-y-1">
@@ -4006,45 +4038,45 @@ export default function App() {
                                         const newPlan = {...trainingPlan};
                                         newPlan.dias[trainingDayIndex].exercicios[i].nome = e.target.value.toUpperCase();
                                         setTrainingPlan(newPlan);
-                                    }} className="bg-transparent text-[16px] font-bold text-white border-b border-white/10 outline-none" />
+                                    }} className="bg-transparent text-[16px] font-bold text-[var(--color-text)] border-b border-[var(--color-border)] outline-none" />
                                 ) : (
-                                    <h4 className="text-[16px] font-bold text-white group-hover:text-[var(--color-neon)] transition-colors">{ex.nome}</h4>
+                                    <h4 className="text-[16px] font-bold text-[var(--color-text)] group-hover:text-[var(--color-neon)] transition-colors">{ex.nome}</h4>
                                 )}
                               </div>
                               {ex.why && (
-                                <p className="text-[11px] text-[#6b7280] italic leading-relaxed mt-1">
+                                <p className="text-[11px] text-[var(--color-text-muted)] italic leading-relaxed mt-1">
                                   {ex.why}
                                 </p>
                               )}
                             </div>
-                            <button className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-[#6b7280] hover:bg-[var(--color-neon)] hover:text-black transition-all">
+                            <button className="w-8 h-8 rounded-full bg-[var(--color-overlay)] flex items-center justify-center text-[var(--color-text-muted)] hover:bg-[var(--color-neon)] hover:text-white transition-all">
                               <Play className="w-4 h-4 fill-current ml-0.5" />
                             </button>
                           </div>
                           
                           <div className="flex gap-4 relative z-10">
-                              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/5 border border-white/5">
-                                <span className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Séries</span>
+                              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[var(--color-overlay)] border border-[var(--color-border-subtle)]">
+                                <span className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider">Séries</span>
                                 {isEditing ? (
                                     <input value={ex.series} onChange={(e) => {
                                         const newPlan = {...trainingPlan};
                                         newPlan.dias[trainingDayIndex].exercicios[i].series = e.target.value;
                                         setTrainingPlan(newPlan);
-                                    }} className="w-8 bg-transparent text-[11px] font-bold text-white border-b border-white/10 text-center outline-none" />
+                                    }} className="w-8 bg-transparent text-[11px] font-bold text-[var(--color-text)] border-b border-[var(--color-border)] text-center outline-none" />
                                 ) : (
-                                    <span className="text-[11px] font-black text-white">{ex.series}</span>
+                                    <span className="text-[11px] font-black text-[var(--color-text)]">{ex.series}</span>
                                 )}
                               </div>
-                              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/5 border border-white/5">
-                                <span className="text-[10px] font-bold text-[#6b7280] uppercase tracking-wider">Reps</span>
+                              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[var(--color-overlay)] border border-[var(--color-border-subtle)]">
+                                <span className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider">Reps</span>
                                 {isEditing ? (
                                     <input value={ex.repeticoes} onChange={(e) => {
                                         const newPlan = {...trainingPlan};
                                         newPlan.dias[trainingDayIndex].exercicios[i].repeticoes = e.target.value;
                                         setTrainingPlan(newPlan);
-                                    }} className="w-8 bg-transparent text-[11px] font-bold text-white border-b border-white/10 text-center outline-none" />
+                                    }} className="w-8 bg-transparent text-[11px] font-bold text-[var(--color-text)] border-b border-[var(--color-border)] text-center outline-none" />
                                 ) : (
-                                    <span className="text-[11px] font-black text-white">{ex.repeticoes}</span>
+                                    <span className="text-[11px] font-black text-[var(--color-text)]">{ex.repeticoes}</span>
                                 )}
                               </div>
                           </div>
@@ -4056,9 +4088,9 @@ export default function App() {
                 </div>
             </div>
         ) : (
-            <div className="flex flex-col items-center justify-center p-12 bg-[#0d1117] rounded-[32px] border border-white/5 text-center">
-              <Dumbbell className="w-12 h-12 text-[#6b7280] opacity-20 mb-4" />
-              <p className="text-[#6b7280] text-[14px] uppercase font-bold tracking-widest">Nenhum plano gerado ainda.</p>
+            <div className="flex flex-col items-center justify-center p-12 bg-[var(--color-bg)] rounded-[32px] border border-[var(--color-border-subtle)] text-center">
+              <Dumbbell className="w-12 h-12 text-[var(--color-text-muted)] opacity-20 mb-4" />
+              <p className="text-[var(--color-text-muted)] text-[14px] uppercase font-bold tracking-widest">Nenhum plano gerado ainda.</p>
               <button onClick={() => setTrainingTab('generator')} className="mt-6 text-[11px] font-black text-[var(--color-neon)] uppercase tracking-wider border border-[var(--color-neon)]/30 px-6 py-2 rounded-full hover:bg-[var(--color-neon)]/10 transition-all">Ir para Gerador</button>
             </div>
         )}
@@ -4077,94 +4109,176 @@ export default function App() {
               >
                 <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
                   <div className="text-center space-y-1 py-4">
-                    <h2 className="text-2xl font-black text-white uppercase italic">Status de Recuperação</h2>
-                    <p className="text-[10px] text-[#00ff88] font-bold uppercase tracking-widest">Bio-Mapeamento de Fadiga Muscular</p>
+                    <h2 className="text-2xl font-black text-[var(--color-text)] uppercase italic">Status de Recuperação</h2>
+                    <p className="text-[10px] text-[#2563eb] font-bold uppercase tracking-widest">Bio-Mapeamento de Fadiga Muscular</p>
                   </div>
 
-                  {/* Muscle SVG Map */}
-                  <div className="bg-[#0d1117] border border-white/5 rounded-[40px] p-8 flex justify-center gap-8 relative overflow-hidden">
-                      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-[#00ff88]/5 via-transparent to-transparent"></div>
+                  {/* Bio-Mapping Status Center */}
+                  <div className="relative glass-card border border-[var(--primary)]/20 rounded-[40px] p-8 overflow-hidden min-h-[500px] flex flex-col items-center">
+                      <div className="absolute inset-0 cyber-grid opacity-10"></div>
+                      <div className="absolute top-0 right-0 w-64 h-64 bg-[var(--primary)]/5 blur-[80px]"></div>
                       
-                      <div className="relative w-full max-w-md flex flex-col items-center justify-center">
-                        <div className="relative w-48 h-80 flex gap-4">
-                           <div className="flex-1 relative">
-                              <div className="relative w-full h-full opacity-80 scale-110">
-                                 <svg viewBox="0 0 100 200" className="w-full h-full drop-shadow-[0_0_15px_rgba(0,0,0,0.5)]">
-                                    <path d="M40 10 Q50 5 60 10 L50 20 Z" fill="#374151" />
-                                    <circle cx="30" cy="35" r="8" fill={getMuscleStatus('Ombros').color} onClick={() => setSelectedMuscle('Ombros')} className="cursor-pointer" />
-                                    <circle cx="70" cy="35" r="8" fill={getMuscleStatus('Ombros').color} onClick={() => setSelectedMuscle('Ombros')} className="cursor-pointer" />
-                                    <rect x="35" y="32" width="15" height="15" rx="2" fill={getMuscleStatus('Peito').color} onClick={() => setSelectedMuscle('Peito')} className="cursor-pointer" />
-                                    <rect x="50" y="32" width="15" height="15" rx="2" fill={getMuscleStatus('Peito').color} onClick={() => setSelectedMuscle('Peito')} className="cursor-pointer" />
-                                    <path d="M22 35 L18 70" stroke={getMuscleStatus('Bíceps').color} strokeWidth="6" strokeLinecap="round" onClick={() => setSelectedMuscle('Bíceps')} className="cursor-pointer" />
-                                    <path d="M78 35 L82 70" stroke={getMuscleStatus('Bíceps').color} strokeWidth="6" strokeLinecap="round" onClick={() => setSelectedMuscle('Bíceps')} className="cursor-pointer" />
-                                    <rect x="40" y="50" width="20" height="25" rx="2" fill={getMuscleStatus('Abdômen').color} onClick={() => setSelectedMuscle('Abdômen')} className="cursor-pointer" />
-                                    <path d="M38 75 L35 140" stroke={getMuscleStatus('Quadríceps').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Quadríceps')} className="cursor-pointer" />
-                                    <path d="M62 75 L65 140" stroke={getMuscleStatus('Quadríceps').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Quadríceps')} className="cursor-pointer" />
-                                 </svg>
-                                 <p className="text-[7px] font-black text-white/20 uppercase text-center mt-2">FRENTE</p>
+                      {/* Scanning Line Animation */}
+                      <motion.div 
+                        animate={{ top: ['0%', '100%', '0%'] }}
+                        transition={{ duration: 4, repeat: Infinity, ease: "linear" }}
+                        className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-[var(--primary)] to-transparent z-10 opacity-30 shadow-[0_0_10px_var(--primary-glow)] pointer-events-none"
+                      />
+
+                      <div className="relative z-10 w-full flex flex-col items-center">
+                        <div className="flex justify-between w-full mb-8">
+                           <div className="flex flex-col">
+                              <span className="text-[10px] font-black text-[var(--color-text-muted)] uppercase tracking-[0.3em] italic">BIO_SCAN_ACTIVE</span>
+                              <div className="flex items-center gap-1.5 mt-1">
+                                 <div className="w-1.5 h-1.5 rounded-full bg-[var(--primary)] animate-pulse shadow-[0_0_8px_var(--primary-glow)]"></div>
+                                 <span className="text-[14px] font-display font-black text-white italic tracking-wider">MÁQUINA BIOMÉTRICA</span>
                               </div>
                            </div>
-                           <div className="flex-1 relative">
-                              <div className="relative w-full h-full opacity-80 scale-110">
-                                 <svg viewBox="0 0 100 200" className="w-full h-full drop-shadow-[0_0_15px_rgba(0,0,0,0.5)]">
-                                    <path d="M40 10 Q50 5 60 10 L50 20 Z" fill="#374151" />
-                                    <path d="M30 32 L70 32 L65 60 L35 60 Z" fill={getMuscleStatus('Costas Superior').color} onClick={() => setSelectedMuscle('Costas Superior')} className="cursor-pointer" />
-                                    <rect x="42" y="62" width="16" height="10" fill={getMuscleStatus('Costas Inferior').color} onClick={() => setSelectedMuscle('Costas Inferior')} className="cursor-pointer" />
-                                    <path d="M22 35 L18 70" stroke={getMuscleStatus('Tríceps').color} strokeWidth="6" strokeLinecap="round" onClick={() => setSelectedMuscle('Tríceps')} className="cursor-pointer" />
-                                    <path d="M78 35 L82 70" stroke={getMuscleStatus('Tríceps').color} strokeWidth="6" strokeLinecap="round" onClick={() => setSelectedMuscle('Tríceps')} className="cursor-pointer" />
-                                    <circle cx="42" cy="80" r="7" fill={getMuscleStatus('Glúteos').color} onClick={() => setSelectedMuscle('Glúteos')} className="cursor-pointer" />
-                                    <circle cx="58" cy="80" r="7" fill={getMuscleStatus('Glúteos').color} onClick={() => setSelectedMuscle('Glúteos')} className="cursor-pointer" />
-                                    <path d="M38 85 L35 140" stroke={getMuscleStatus('Posteriores').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Posteriores')} className="cursor-pointer" />
-                                    <path d="M62 85 L65 140" stroke={getMuscleStatus('Posteriores').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Posteriores')} className="cursor-pointer" />
-                                 </svg>
-                                 <p className="text-[7px] font-black text-white/20 uppercase text-center mt-2">COSTAS</p>
-                              </div>
+                           <div className="text-right">
+                              <span className="text-[10px] font-black text-[var(--color-text-muted)] uppercase tracking-widest">PRECISÃO</span>
+                              <div className="text-[14px] font-display font-black text-[var(--primary)] italic neo-glow-text">98.4%</div>
                            </div>
                         </div>
+
+                        <div className="relative w-64 h-96 flex gap-4">
+                            <div className="flex-1 relative group">
+                               <div className="relative w-full h-full">
+                                  <svg viewBox="0 0 100 200" className="w-full h-full filter drop-shadow-[0_0_8px_rgba(0,0,0,0.8)]">
+                                     {/* Simple Human Outline */}
+                                     <path d="M50 15 c-5 0-9 4-9 9s4 9 9 9 9-4 9-9-4-9-9-9zM36 34c-6 0-11 5-11 11v35c0 3 2 6 5 6h4v100c0 4 3 7 7 7h18c4 0 7-3 7-7v-100h4c3 0 5-3 5-6v-35c0-6-5-11-11-11z" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.1)" strokeWidth="0.5" />
+                                     
+                                     {/* Front Muscles */}
+                                     <circle cx="35" cy="45" r="7" fill={getMuscleStatus('Ombros').color} onClick={() => setSelectedMuscle('Ombros')} className="cursor-pointer hover:opacity-80 transition-opacity" />
+                                     <circle cx="65" cy="45" r="7" fill={getMuscleStatus('Ombros').color} onClick={() => setSelectedMuscle('Ombros')} className="cursor-pointer hover:opacity-80 transition-opacity" />
+                                     
+                                     <path d="M40 45 h20 v15 h-20 z" fill={getMuscleStatus('Peito').color} onClick={() => setSelectedMuscle('Peito')} className="cursor-pointer hover:opacity-80 transition-opacity" />
+                                     
+                                     <path d="M30 45 l-8 30" stroke={getMuscleStatus('Bíceps').color} strokeWidth="5" strokeLinecap="round" onClick={() => setSelectedMuscle('Bíceps')} className="cursor-pointer opacity-70" />
+                                     <path d="M70 45 l 8 30" stroke={getMuscleStatus('Bíceps').color} strokeWidth="5" strokeLinecap="round" onClick={() => setSelectedMuscle('Bíceps')} className="cursor-pointer opacity-70" />
+                                     
+                                     <rect x="42" y="62" width="16" height="25" rx="3" fill={getMuscleStatus('Abdômen').color} onClick={() => setSelectedMuscle('Abdômen')} className="cursor-pointer hover:opacity-80 transition-opacity" />
+                                     
+                                     <path d="M40 95 l-5 80" stroke={getMuscleStatus('Quadríceps').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Quadríceps')} className="cursor-pointer opacity-70" />
+                                     <path d="M60 95 l 5 80" stroke={getMuscleStatus('Quadríceps').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Quadríceps')} className="cursor-pointer opacity-70" />
+                                  </svg>
+                                  <p className="text-[8px] font-black text-[var(--color-text-muted)] uppercase text-center mt-3 tracking-[0.4em]">FRONT_VIEW</p>
+                               </div>
+                            </div>
+                            
+                            <div className="flex-1 relative group">
+                               <div className="relative w-full h-full">
+                                  <svg viewBox="0 0 100 200" className="w-full h-full filter drop-shadow-[0_0_8px_rgba(0,0,0,0.8)]">
+                                     <path d="M50 15 c-5 0-9 4-9 9s4 9 9 9 9-4 9-9-4-9-9-9zM36 34c-6 0-11 5-11 11v35c0 3 2 6 5 6h4v100c0 4 3 7 7 7h18c4 0 7-3 7-7v-100h4c3 0 5-3 5-6v-35c0-6-5-11-11-11z" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.1)" strokeWidth="0.5" />
+                                     
+                                     {/* Back Muscles */}
+                                     <path d="M35 45 h30 l-5 25 h-20 z" fill={getMuscleStatus('Costas Superior').color} onClick={() => setSelectedMuscle('Costas Superior')} className="cursor-pointer hover:opacity-80" />
+                                     <rect x="44" y="72" width="12" height="15" fill={getMuscleStatus('Costas Inferior').color} onClick={() => setSelectedMuscle('Costas Inferior')} className="cursor-pointer hover:opacity-80" />
+                                     
+                                     <path d="M30 45 l-8 30" stroke={getMuscleStatus('Tríceps').color} strokeWidth="5" strokeLinecap="round" onClick={() => setSelectedMuscle('Tríceps')} className="cursor-pointer opacity-70" />
+                                     <path d="M70 45 l 8 30" stroke={getMuscleStatus('Tríceps').color} strokeWidth="5" strokeLinecap="round" onClick={() => setSelectedMuscle('Tríceps')} className="cursor-pointer opacity-70" />
+                                     
+                                     <circle cx="43" cy="95" r="7" fill={getMuscleStatus('Glúteos').color} onClick={() => setSelectedMuscle('Glúteos')} className="cursor-pointer" />
+                                     <circle cx="57" cy="95" r="7" fill={getMuscleStatus('Glúteos').color} onClick={() => setSelectedMuscle('Glúteos')} className="cursor-pointer" />
+                                     
+                                     <path d="M40 105 l-5 70" stroke={getMuscleStatus('Posteriores').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Posteriores')} className="cursor-pointer opacity-70" />
+                                     <path d="M60 105 l 5 70" stroke={getMuscleStatus('Posteriores').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Posteriores')} className="cursor-pointer opacity-70" />
+                                  </svg>
+                                  <p className="text-[8px] font-black text-[var(--color-text-muted)] uppercase text-center mt-3 tracking-[0.4em]">BACK_VIEW</p>
+                               </div>
+                            </div>
+                        </div>
+                      </div>
+
+                      <div className="absolute bottom-10 left-10 right-10 flex items-center justify-between border-t border-white/5 pt-6">
+                        {[
+                          { label: 'OPT', color: 'var(--primary)' },
+                          { label: 'LOW', color: 'var(--accent)' },
+                          { label: 'STRESS', color: 'var(--error)' },
+                          { label: 'NULL', color: '#1a202c' },
+                        ].map(l => (
+                          <div key={l.label} className="flex flex-col items-center gap-1">
+                              <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: l.color, boxShadow: `0 0 10px ${l.color}` }}></div>
+                              <span className="text-[8px] font-black text-[var(--color-text-muted)] uppercase tracking-widest">{l.label}</span>
+                          </div>
+                        ))}
                       </div>
                   </div>
 
                   {/* Fatigue Legend */}
-                  <div className="flex items-center justify-center gap-4 bg-white/5 p-4 rounded-2xl border border-white/5">
+                  <div className="flex items-center justify-center gap-4 bg-[var(--color-overlay)] p-4 rounded-2xl border border-[var(--color-border-subtle)]">
                       {[
-                        { label: 'Pronto', color: 'bg-[#00ff88]' },
-                        { label: 'Leve', color: 'bg-[#ffb800]' },
-                        { label: 'Fadigado', color: 'bg-[#ff4444]' },
-                        { label: 'Sem Dados', color: 'bg-[#374151]' },
+                        { label: 'Pronto', color: 'bg-[var(--primary)]' },
+                        { label: 'Em Reparo', color: 'bg-[var(--secondary)]' },
+                        { label: 'Fadigado', color: 'bg-[var(--error)]' },
+                        { label: 'Sem Dados', color: 'bg-[var(--outline)]' },
                       ].map(l => (
                         <div key={l.label} className="flex items-center gap-1.5">
-                            <div className={`w-2 h-2 rounded-full ${l.color}`}></div>
-                            <span className="text-[8px] font-bold text-[#6b7280] uppercase tracking-widest">{l.label}</span>
+                            <div className={`w-2.5 h-2.5 rounded-full ${l.color} shadow-sm`}></div>
+                            <span className="text-[9px] font-black text-[var(--color-text-muted)] uppercase tracking-widest">{l.label}</span>
                         </div>
                       ))}
                   </div>
 
-                  <AnimatePresence>
-                    {selectedMuscle && (
+                  <AnimatePresence mode="wait">
+                    {selectedMuscle ? (
                       <motion.div 
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        className="bg-[#00ff88]/5 border border-[#00ff88]/20 rounded-3xl p-6 relative overflow-hidden"
+                        key="selected"
+                        initial={{ height: 0, opacity: 0, scale: 0.95 }}
+                        animate={{ height: 'auto', opacity: 1, scale: 1 }}
+                        exit={{ height: 0, opacity: 0, scale: 0.95 }}
+                        className="glass-card border border-[var(--primary)]/20 rounded-3xl p-6 relative overflow-hidden"
                       >
+                          <div className="absolute top-0 right-0 w-32 h-32 bg-[var(--primary)]/5 blur-[40px] rounded-full pointer-events-none"></div>
                           <button 
                             onClick={() => setSelectedMuscle(null)}
-                            className="absolute top-4 right-4 p-1 hover:bg-white/5 rounded-full"
+                            className="absolute top-4 right-4 p-2 hover:bg-[var(--color-overlay)] rounded-full transition-colors z-10"
                           >
-                            <X className="w-4 h-4 text-[#6b7280]" />
+                            <X className="w-5 h-5 text-[var(--color-text-muted)]" />
                           </button>
-                          <div className="flex items-start gap-4">
-                            <div className={`p-3 rounded-2xl ${getMuscleStatus(selectedMuscle).bg}`}>
-                                <Activity className="w-6 h-6 text-black" />
+                          <div className="flex items-start gap-5 relative z-10">
+                            <div className={`w-16 h-16 rounded-[20px] flex items-center justify-center ${getMuscleStatus(selectedMuscle).bg} transition-all duration-500`}>
+                                <Activity className={`w-8 h-8 ${getMuscleStatus(selectedMuscle).text}`} />
                             </div>
-                            <div className="space-y-1">
-                                <p className="text-[10px] font-bold text-[#6b7280] uppercase tracking-[0.2em]">Detalhes de Grupo</p>
-                                <h4 className="text-xl font-black text-white uppercase italic">{selectedMuscle}</h4>
-                                <div className="flex items-center gap-1.5">
-                                    <span className={`text-[10px] font-black uppercase ${getMuscleStatus(selectedMuscle).text}`}>Status: {getMuscleStatus(selectedMuscle).status}</span>
+                            <div className="flex-1 space-y-2">
+                                <div className="flex items-center gap-2">
+                                   <p className="text-[10px] font-black text-[var(--color-text-muted)] uppercase tracking-[0.2em] italic">Análise de Grupo</p>
+                                   <div className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${getMuscleStatus(selectedMuscle).bg} ${getMuscleStatus(selectedMuscle).text}`}>
+                                      {getMuscleStatus(selectedMuscle).status}
+                                   </div>
+                                </div>
+                                <h4 className="text-2xl font-black text-[var(--color-text)] uppercase italic leading-none">{selectedMuscle}</h4>
+                                <div className="p-3 bg-[var(--color-bg)] rounded-xl border border-[var(--color-border-subtle)]">
+                                   <p className="text-[12px] text-[var(--color-text-muted)] leading-relaxed font-medium">
+                                      {getMuscleStatus(selectedMuscle).desc}
+                                   </p>
+                                </div>
+                                <div className="flex items-center gap-4 pt-1">
+                                   <div className="flex flex-col">
+                                      <span className="text-[8px] font-black text-[var(--color-text-muted)] uppercase tracking-widest">Último Estímulo</span>
+                                      <span className="text-[12px] font-bold text-[var(--color-text)]">{getMuscleStatus(selectedMuscle).days} {getMuscleStatus(selectedMuscle).days === 1 ? 'dia' : 'dias'} atrás</span>
+                                   </div>
+                                   <div className="w-px h-6 bg-[var(--color-border-subtle)]" />
+                                   <div className="flex flex-col">
+                                      <span className="text-[8px] font-black text-[var(--color-text-muted)] uppercase tracking-widest">Protocolo</span>
+                                      <span className={`text-[12px] font-bold ${(typeof getMuscleStatus(selectedMuscle).days === 'number' && (getMuscleStatus(selectedMuscle).days as number) <= 1) ? 'text-[var(--error)]' : 'text-[var(--primary)]'}`}>
+                                         {(typeof getMuscleStatus(selectedMuscle).days === 'number' && (getMuscleStatus(selectedMuscle).days as number) <= 1) ? 'Repouso Total' : 'Hipertrofia Ativa'}
+                                      </span>
+                                   </div>
                                 </div>
                             </div>
                           </div>
+                      </motion.div>
+                    ) : (
+                      <motion.div
+                        key="info"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="bg-[var(--color-overlay)] border border-[var(--color-border-subtle)] rounded-3xl p-6 text-center"
+                      >
+                         <p className="text-[11px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest">
+                            Clique em um grupo muscular no mapa acima para ver o veredito biológico.
+                         </p>
                       </motion.div>
                     )}
                   </AnimatePresence>
@@ -4175,526 +4289,264 @@ export default function App() {
             {activeTab === "profile" && (
               <motion.div
                 key="profile"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="max-w-5xl mx-auto space-y-6 pb-24"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="max-w-lg mx-auto pb-32 pt-4 px-6"
               >
-                {/* Profile Header */}
-                <div className="bg-[#0d1117] border border-white/5 rounded-[32px] p-6 relative overflow-hidden">
-                  <div className="absolute top-0 right-0 w-32 h-32 bg-[#00ff88]/5 blur-3xl rounded-full" />
-                  
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-4">
-                      <div className="w-16 h-16 rounded-full bg-gradient-to-br from-[#00ff88] to-[#004d2c] flex items-center justify-center border-2 border-white/10 shadow-lg group relative overflow-hidden">
+                {/* User Identity Section */}
+                <section className="flex flex-col items-center mb-10">
+                  <div className="relative mb-6">
+                    <div className="w-32 h-32 rounded-full p-[2px] bg-gradient-to-tr from-[var(--primary)] via-[var(--secondary)] to-[var(--tertiary)] neo-glow-primary">
+                      <div className="w-full h-full rounded-full overflow-hidden border-4 border-[var(--color-bg)] bg-[var(--color-surface)] flex items-center justify-center">
                         {profile.avatar ? (
-                          <img src={profile.avatar} className="w-full h-full object-cover" />
+                          <img src={profile.avatar} alt="Profile" className="w-full h-full object-cover" />
                         ) : (
-                          <span className="text-2xl font-black text-black" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
-                            {user?.user_metadata?.full_name?.split(' ').map((n: string) => n[0]).join('') || 'IA'}
-                          </span>
+                          <User className="w-12 h-12 text-[var(--color-text-muted)]" />
                         )}
                       </div>
-                      <div>
-                        <h2 className="text-lg font-black text-white uppercase tracking-tight">
-                          {user?.user_metadata?.full_name || 'Atleta Shape IA'}
-                        </h2>
-                        <p className="text-[#00ff88] text-[10px] font-bold uppercase tracking-widest">
-                          Foco: {profile.goal}
-                        </p>
-                        <p className="text-[#6b7280] text-[10px]">
-                          Membro desde {profile.startDate || 'Maio 2024'}
+                    </div>
+                    <div className="absolute -bottom-2 -right-2 bg-[var(--primary)] text-[#001f29] p-1 rounded-full flex items-center justify-center border-2 border-[var(--color-bg)]">
+                      <span className="material-symbols-outlined text-[20px]" style={{ fontVariationSettings: "'FILL' 1" }}>verified</span>
+                    </div>
+                  </div>
+                  <h1 className="text-2xl font-bold text-[var(--color-text)] text-center mb-1 tracking-tight uppercase">
+                    {profile.name || user?.user_metadata?.full_name || 'ATLETA SHAPE IA'}
+                  </h1>
+                  <div className="inline-flex items-center gap-1.5 px-4 py-1 rounded-full bg-[var(--secondary-container)] border border-[var(--secondary)]/30">
+                    <span className="material-symbols-outlined text-[var(--secondary)] text-[14px]">track_changes</span>
+                    <span className="text-[10px] font-bold text-[var(--secondary)] tracking-[0.15em] uppercase">FOCO: {profile.goal}</span>
+                  </div>
+                </section>
+
+                {/* Stats Grid */}
+                <section className="grid grid-cols-2 gap-4 mb-10">
+                  {/* Score Card */}
+                  <div className="glass-card rounded-2xl p-6 flex flex-col items-center text-center transition-transform active:scale-95">
+                    <div className="mb-3 relative w-16 h-16 flex items-center justify-center">
+                      <svg className="w-full h-full">
+                        <circle className="text-white/5" cx="32" cy="32" fill="transparent" r="28" stroke="currentColor" strokeWidth="4"></circle>
+                        <circle 
+                          className="text-[var(--primary)] progress-ring" 
+                          cx="32" 
+                          cy="32" 
+                          fill="transparent" 
+                          r="28" 
+                          stroke="currentColor" 
+                          strokeDasharray="175.9" 
+                          strokeDashoffset={175.9 - (175.9 * (result?.overallScore || (evolutionHistory.length > 0 ? evolutionHistory[evolutionHistory.length-1].score : 0))) / 100} 
+                          strokeLinecap="round" 
+                          strokeWidth="4"
+                        ></circle>
+                      </svg>
+                      <span className="absolute font-bold text-lg text-[var(--primary)]">
+                        {result?.overallScore || (evolutionHistory.length > 0 ? evolutionHistory[evolutionHistory.length-1].score : 0)}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-bold text-[var(--outline)] uppercase tracking-widest">SHAPE SCORE</span>
+                  </div>
+                  {/* BF Card */}
+                  <div className="glass-card rounded-2xl p-6 flex flex-col items-center text-center transition-transform active:scale-95">
+                    <div className="mb-3">
+                      <span className="material-symbols-outlined text-[var(--secondary)] text-[32px]">monitor_weight</span>
+                    </div>
+                    <span className="text-2xl font-bold text-[var(--secondary)] tracking-tight">
+                      {result?.bfEstimate || (evolutionHistory.length > 0 ? evolutionHistory[evolutionHistory.length-1].bf : 0)}%
+                    </span>
+                    <span className="text-[10px] font-bold text-[var(--outline)] uppercase tracking-widest">BODY FAT</span>
+                  </div>
+                  {/* Streak Card */}
+                  <div className="glass-card rounded-2xl p-6 flex flex-col items-center text-center transition-transform active:scale-95">
+                    <div className="mb-3">
+                      <span className="material-symbols-outlined text-[var(--tertiary)] text-[32px]">local_fire_department</span>
+                    </div>
+                    <span className="text-2xl font-bold text-[var(--tertiary)] tracking-tight">14</span>
+                    <span className="text-[10px] font-bold text-[var(--outline)] uppercase tracking-widest">DIAS SEGUIDOS</span>
+                  </div>
+                  {/* Total Workouts Card */}
+                  <div className="glass-card rounded-2xl p-6 flex flex-col items-center text-center transition-transform active:scale-95">
+                    <div className="mb-3">
+                      <span className="material-symbols-outlined text-[var(--primary)] text-[32px]">fitness_center</span>
+                    </div>
+                    <span className="text-2xl font-bold text-[var(--primary)] tracking-tight">
+                      {completedWorkouts?.length || 0}
+                    </span>
+                    <span className="text-[10px] font-bold text-[var(--outline)] uppercase tracking-widest">TREINOS TOTAL</span>
+                  </div>
+                </section>
+
+                {/* Evolution Section */}
+                <section className="glass-card rounded-[32px] p-8 mb-10 overflow-hidden relative">
+                  <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-[var(--primary)] to-transparent opacity-50"></div>
+                  <div className="flex justify-between items-center mb-8">
+                    <div className="flex flex-col">
+                        <h2 className="text-[12px] font-black text-white uppercase tracking-[0.3em] italic mb-1">DATA EVOLUTION</h2>
+                        <span className="text-[8px] font-bold text-[var(--primary)] uppercase tracking-widest neo-glow-text">SHAPE_SCORE_LOG</span>
+                    </div>
+                    <div className="flex gap-1.5 p-1 glass-card border-none rounded-xl">
+                      {(['1M', '3M', '6M', 'ALL'] as const).map((filter) => (
+                        <button 
+                          key={filter}
+                          onClick={() => setTimeFilter(filter)}
+                          className={`px-3 py-1.5 rounded-lg transition-all text-[9px] font-black tracking-widest ${
+                            timeFilter === filter 
+                              ? "bg-[var(--primary)] text-[var(--on-primary)] shadow-[0_0_15px_var(--primary-glow)]" 
+                              : "text-[var(--color-text-muted)] hover:text-white"
+                          }`}
+                        >
+                          {filter}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="h-64 w-full relative">
+                    <div className="absolute inset-0 cyber-grid opacity-10 pointer-events-none"></div>
+                    {evolutionHistory.length > 0 ? (
+                      <RechartsResponsiveContainer width="100%" height="100%">
+                        <AreaChart 
+                          data={evolutionHistory.filter(h => {
+                            if (timeFilter === 'ALL') return true;
+                            const hDate = new Date(h.date);
+                            const now = new Date();
+                            const diffMonths = (now.getFullYear() - hDate.getFullYear()) * 12 + (now.getMonth() - hDate.getMonth());
+                            if (timeFilter === '1M') return diffMonths <= 1;
+                            if (timeFilter === '3M') return diffMonths <= 3;
+                            if (timeFilter === '6M') return diffMonths <= 6;
+                            return true;
+                          })}
+                          margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+                        >
+                          <defs>
+                            <linearGradient id="colorScore" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.4}/>
+                              <stop offset="95%" stopColor="var(--primary)" stopOpacity={0}/>
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.05)" />
+                          <XAxis 
+                            dataKey="date" 
+                            axisLine={false}
+                            tickLine={false}
+                            tick={{ fontSize: 9, fill: 'var(--color-text-muted)', fontWeight: 800 }}
+                            tickFormatter={(str) => {
+                              try {
+                                const date = new Date(str);
+                                return date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+                              } catch { return str; }
+                            }}
+                          />
+                          <YAxis 
+                            axisLine={false}
+                            tickLine={false}
+                            tick={{ fontSize: 9, fill: 'var(--color-text-muted)', fontWeight: 800 }}
+                            domain={[0, 'auto']}
+                          />
+                          <Tooltip 
+                            contentStyle={{ 
+                              backgroundColor: 'rgba(11, 15, 20, 0.9)', 
+                              border: '1px solid var(--primary)',
+                              borderRadius: '16px',
+                              fontSize: '11px',
+                              fontWeight: 800,
+                              textTransform: 'uppercase',
+                              letterSpacing: '0.1em',
+                              backdropFilter: 'blur(10px)'
+                            }}
+                            itemStyle={{ color: 'var(--primary)' }}
+                          />
+                          <Area 
+                            type="monotone" 
+                            dataKey="score" 
+                            stroke="var(--primary)" 
+                            strokeWidth={4} 
+                            fillOpacity={1} 
+                            fill="url(#colorScore)" 
+                            animationDuration={1500}
+                            animationEasing="ease-in-out"
+                            dot={{ fill: 'var(--primary)', strokeWidth: 2, r: 4, stroke: 'var(--color-bg)' }}
+                            activeDot={{ r: 6, strokeWidth: 0, fill: 'var(--primary)', className: 'neo-glow-primary' }}
+                          />
+                        </AreaChart>
+                      </RechartsResponsiveContainer>
+                    ) : (
+                      <div className="h-full flex flex-col items-center justify-center text-center p-8 border border-dashed border-white/10 rounded-[24px] bg-white/2">
+                        <TrendingUp className="w-12 h-12 text-[var(--primary)] mb-4 opacity-20" />
+                        <h4 className="text-[14px] font-black text-white uppercase tracking-widest mb-2 font-display italic">Nenhum Registro</h4>
+                        <p className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest max-w-[180px]">
+                          Complete seu primeiro scan para mapear sua evolução biotecnológica.
                         </p>
                       </div>
-                    </div>
-                    <button 
-                      onClick={() => setShowProfileSettings(true)}
-                      className="p-2.5 rounded-xl bg-white/5 border border-white/5 text-[#6b7280] hover:text-white hover:bg-white/10 transition-all"
-                    >
-                      <Settings2 className="w-5 h-5" />
-                    </button>
+                    )}
                   </div>
+                </section>
 
-                  {/* Mini Stats Grid */}
-                  <div className="grid grid-cols-4 gap-2 mt-6">
-                    {[
-                      { label: "Score", value: result?.overallScore || (evolutionHistory.length > 0 ? evolutionHistory[evolutionHistory.length-1].score : 0), trend: 'up', color: 'text-[#00ff88]' },
-                      { label: "BF%", value: `${result?.bfEstimate || (evolutionHistory.length > 0 ? evolutionHistory[evolutionHistory.length-1].bf : 0)}%`, trend: 'down', color: 'text-[#ffb800]' },
-                      { label: "Streak", value: "1 Dia", trend: 'up', color: 'text-[#ff4444]' },
-                      { label: "Treinos", value: completedWorkouts?.length || 0, trend: 'up', color: 'text-blue-400' },
-                    ].map((stat, i) => (
-                      <div key={i} className="bg-white/5 border border-white/5 rounded-2xl p-2.5 text-center">
-                        <p className="text-[8px] font-bold text-[#6b7280] uppercase tracking-widest mb-1">{stat.label}</p>
-                        <div className="flex items-center justify-center gap-1">
-                          <span className={`text-[12px] font-black ${stat.color}`}>{stat.value}</span>
-                          {stat.trend === 'up' ? <TrendingUp className="w-2.5 h-2.5 text-[#00ff88]" /> : <TrendingDown className="w-2.5 h-2.5 text-red-400" />}
+                {/* Achievements Section */}
+                <section className="mb-10 overflow-hidden">
+                  <div className="flex justify-between items-center mb-6">
+                    <h2 className="text-[14px] font-bold text-[var(--color-text)] uppercase tracking-wide">CONQUISTAS</h2>
+                    <button className="text-[var(--primary)] text-[11px] font-bold uppercase tracking-widest">Ver Tudo</button>
+                  </div>
+                  <div className="flex gap-6 overflow-x-auto pb-4 no-scrollbar">
+                    {badges.map((badge) => (
+                      <div key={badge.id} className={`flex-shrink-0 flex flex-col items-center w-24 transition-all ${badge.locked ? 'opacity-40 grayscale' : ''}`}>
+                        <div className={`w-16 h-16 rounded-full bg-[var(--color-surface)] flex items-center justify-center border ${badge.locked ? 'border-[var(--outline)]/30' : 'border-[var(--primary)]/30 neo-glow-primary'} mb-3`}>
+                          {badge.locked ? (
+                             <Lock className="w-8 h-8 text-[var(--outline)]" />
+                          ) : (
+                             <span className="text-3xl">{badge.icon}</span>
+                          )}
                         </div>
+                        <span className="text-[10px] text-center font-bold text-[var(--color-text)] leading-tight uppercase tracking-tight">
+                          {badge.name}
+                        </span>
                       </div>
                     ))}
                   </div>
-                </div>
+                </section>
 
-                {/* Vertical Tabs */}
-                <div className="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar px-1">
-                  {(["resumo", "historico", "fotos", "musculos"] as const).map((tab) => (
-                    <button
-                      key={tab}
-                      onClick={() => setProfileTab(tab)}
-                      className={`px-6 py-2.5 rounded-full text-[10px] font-black uppercase tracking-widest whitespace-nowrap transition-all ${
-                        profileTab === tab 
-                          ? "bg-[#00ff88] text-black shadow-[0_5px_15px_rgba(0,255,136,0.2)]" 
-                          : "bg-white/5 text-[#6b7280] border border-white/5 hover:bg-white/10"
-                      }`}
-                    >
-                      {tab}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Tab Content */}
-                <div className="min-h-[400px]">
-                  {profileTab === "resumo" && (
-                    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                      {/* Evolution Chart */}
-                      <div className="bg-[#0d1117] border border-white/5 rounded-[32px] p-6 space-y-4">
-                        <div className="flex items-center justify-between">
-                          <h3 className="text-xs font-black uppercase tracking-widest text-white/40">Evolução de Score</h3>
-                          <div className="flex bg-white/5 rounded-lg p-1 border border-white/5">
-                            {["1 Mês", "3 Meses", "6 Meses", "Tudo"].map((f) => (
-                              <button key={f} className="px-3 py-1 text-[8px] font-bold text-[#6b7280] uppercase hover:text-white transition-all">{f}</button>
-                            ))}
-                          </div>
-                        </div>
-                        <div className="h-[240px] w-full">
-                          {evolutionHistory.length > 0 ? (
-                            <RechartsResponsiveContainer width="100%" height="100%">
-                              <AreaChart data={evolutionHistory}>
-                                <defs>
-                                  <linearGradient id="colorScore" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor="#00ff88" stopOpacity={0.3}/>
-                                    <stop offset="95%" stopColor="#00ff88" stopOpacity={0}/>
-                                  </linearGradient>
-                                </defs>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
-                                <XAxis dataKey="date" stroke="#ffffff20" fontSize={10} axisLine={false} tickLine={false} />
-                                <YAxis stroke="#ffffff20" fontSize={10} axisLine={false} tickLine={false} domain={[0, 100]} />
-                                <Tooltip 
-                                  contentStyle={{ backgroundColor: '#0d1117', border: '1px solid #ffffff10', borderRadius: '12px' }}
-                                  itemStyle={{ fontSize: '10px', color: '#00ff88' }}
-                                />
-                                <Area type="monotone" dataKey="score" stroke="#00ff88" strokeWidth={3} fillOpacity={1} fill="url(#colorScore)" />
-                              </AreaChart>
-                            </RechartsResponsiveContainer>
-                          ) : (
-                            <div className="h-full flex items-center justify-center border border-dashed border-white/10 rounded-2xl">
-                              <p className="text-[#6b7280] text-[10px] uppercase font-bold tracking-widest italic">Nada para exibir ainda.</p>
-                            </div>
-                          )}
-                        </div>
+                {/* Account Actions */}
+                <section className="space-y-4 mb-20 px-2">
+                  <button 
+                    onClick={() => setShowProfileSettings(true)}
+                    className="w-full flex items-center justify-between p-5 glass-card rounded-2xl hover:bg-white/5 transition-all text-left"
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-white/5 flex items-center justify-center">
+                        <Settings className="w-5 h-5 text-[var(--outline)]" />
                       </div>
-
-                      {/* Metrics Evolution */}
-                      <div className="space-y-3">
-                        <h3 className="text-[10px] font-black uppercase tracking-widest text-white/40 ml-1">Evolução de Métricas</h3>
-                        <div className="grid grid-cols-1 gap-3">
-                          {[
-                            { name: "Peso Corporal", value: `${profile.weight}kg`, change: "--", trend: 'up', color: 'text-[#00ff88]' },
-                            { name: "BF% Estimado", value: `${result?.bfEstimate || 0}%`, change: "--", trend: 'down', color: 'text-[#ffb800]' },
-                            { name: "Symmetry Score", value: `${result?.metrics.symmetry || 0}/100`, change: "--", trend: 'up', color: 'text-blue-400' },
-                          ].map((metric, i) => (
-                            <div key={i} className="bg-[#0d1117] border border-white/5 rounded-2xl p-4 flex items-center justify-between">
-                              <div>
-                                <p className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest">{metric.name}</p>
-                                <p className="text-lg font-black text-white">{metric.value}</p>
-                              </div>
-                              <div className="text-right">
-                                <span className={`text-[10px] font-bold ${metric.trend === 'down' ? 'text-[#00ff88]' : 'text-[#ffb800]'} px-2 py-1 bg-white/5 rounded-lg`}>
-                                  {metric.change}
-                                </span>
-                                <div className="h-6 w-24 mt-2">
-                                  {/* Sparkline simulation using history if available */}
-                                  <div className="flex items-end gap-0.5 h-full">
-                                    {evolutionHistory.length >= 7 ? 
-                                       evolutionHistory.slice(-7).map((h, j) => (
-                                          <div key={j} className="flex-1 bg-[#00ff88]/20 rounded-full" style={{ height: `${h.score}%` }} />
-                                       )) : 
-                                       [10, 10, 10, 10, 10, 10, 10].map((h, j) => (
-                                          <div key={j} className="flex-1 bg-white/5 rounded-full" style={{ height: `${h}%` }} />
-                                       ))
-                                    }
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Badges */}
-                      <div className="space-y-3">
-                        <h3 className="text-[10px] font-black uppercase tracking-widest text-white/40 ml-1">Conquistas</h3>
-                        <div className="grid grid-cols-4 gap-3">
-                          {badges.map((badge) => (
-                            <div 
-                              key={badge.id}
-                              className={`aspect-square rounded-2xl border flex flex-col items-center justify-center p-2 text-center transition-all ${
-                                !badge.locked ? "bg-[#00ff88]/10 border-[#00ff88]/20" : "bg-white/5 border-white/5 grayscale opacity-30"
-                              }`}
-                            >
-                              <span className="text-2xl mb-1">{badge.icon}</span>
-                              <p className="text-[7px] font-black uppercase leading-tight">{badge.name}</p>
-                            </div>
-                          ))}
-                        </div>
+                      <div>
+                        <p className="text-[13px] font-bold text-[var(--color-text)] uppercase tracking-wide">Configurações</p>
+                        <p className="text-[11px] text-[var(--outline)]">Privacidade e Perfil</p>
                       </div>
                     </div>
-                  )}
+                    <ChevronRight className="w-5 h-5 text-[var(--outline)]" />
+                  </button>
 
-                  {profileTab === "historico" && (
-                    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                      <div className="flex bg-white/5 rounded-2xl p-1 border border-white/5">
-                        <button 
-                          onClick={() => setHistorySubTab("treinos")}
-                          className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${historySubTab === "treinos" ? "bg-white/10 text-white" : "text-[#6b7280]"}`}
-                        >
-                          Treinos
-                        </button>
-                        <button 
-                          onClick={() => setHistorySubTab("analises")}
-                          className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${historySubTab === "analises" ? "bg-white/10 text-white" : "text-[#6b7280]"}`}
-                        >
-                          Análises
-                        </button>
+                  <div className="w-full flex items-center justify-between p-5 glass-card rounded-2xl text-left bg-[#006782]/5 relative overflow-hidden group">
+                    <div className="flex items-center gap-4 relative z-10">
+                      <div className="w-10 h-10 rounded-xl bg-[#006782]/20 flex items-center justify-center">
+                        <ShieldCheck className="w-5 h-5 text-[var(--primary)]" />
                       </div>
-
-                      <div className="space-y-3">
-                        {historySubTab === "treinos" ? (
-                          (workoutHistory.length > 0 ? workoutHistory : [
-                            { id: '1', date: '2026-05-10 18:30', title: 'Treino A - Peito e Tríceps', muscles: ['Peito', 'Tríceps'], exercisesCount: 6, duration: 55, completed: true }
-                          ]).map((item: any) => (
-                            <div key={item.id} className="bg-[#0d1117] border border-white/5 rounded-2xl p-4 space-y-4 group">
-                              <div className="flex items-center justify-between">
-                                <div>
-                                  <div className="flex items-center gap-2 mb-1">
-                                    <span className="text-[9px] font-bold text-[#6b7280]">{item.date}</span>
-                                    <span className="px-1.5 py-0.5 bg-[#00ff88]/10 text-[#00ff88] text-[8px] font-black uppercase rounded tracking-wider">Completo</span>
-                                  </div>
-                                  <h4 className="text-sm font-black text-white uppercase">{item.title}</h4>
-                                </div>
-                                <div className="text-right">
-                                  <p className="text-xs font-black text-white">{item.exercisesCount} Exercícios</p>
-                                  <p className="text-[10px] text-[#6b7280]">{item.duration} min</p>
-                                </div>
-                              </div>
-                              <div className="flex flex-wrap gap-1.5 pt-2 border-t border-white/5">
-                                {item.muscles?.map((m: string) => (
-                                  <span key={m} className="px-2 py-1 bg-white/5 rounded-lg text-[8px] font-black text-[#6b7280] uppercase">{m}</span>
-                                ))}
-                              </div>
-                            </div>
-                          ))
-                        ) : (
-                          analysisHistory.length > 0 ? analysisHistory.map((item: any) => (
-                            <div key={item.id} className="bg-[#0d1117] border border-white/5 rounded-2xl p-4 flex items-center gap-4 group">
-                               <div className="w-16 h-20 rounded-xl overflow-hidden border border-white/10 shrink-0 text-center flex items-center justify-center bg-white/5">
-                                 {item.frontPhoto ? (
-                                   <img src={item.frontPhoto} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all" />
-                                 ) : (
-                                   <Activity className="w-6 h-6 text-[#6b7280]" />
-                                 )}
-                               </div>
-                               <div className="flex-1">
-                                 <p className="text-[9px] font-bold text-[#6b7280] uppercase mb-0.5">{item.date}</p>
-                                 <h4 className="text-sm font-black text-white uppercase mb-1">Score: {item.overallScore}</h4>
-                                 <div className="flex items-center gap-2">
-                                  <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${
-                                    item.category === 'Elite' ? 'bg-[#ff4444]/10 text-[#ff4444]' :
-                                    item.category === 'Atlético' ? 'bg-[#ffb800]/10 text-[#ffb800]' :
-                                    'bg-[#00ff88]/10 text-[#00ff88]'
-                                  }`}>
-                                    {item.category}
-                                  </span>
-                                  <span className="text-[10px] font-bold text-[#6b7280]">{item.bfEstimate}% BF</span>
-                                 </div>
-                               </div>
-                               <ChevronRight className="w-5 h-5 text-[#6b7280] group-hover:text-white transition-all" />
-                            </div>
-                          )) : (
-                            <div className="p-8 text-center border border-dashed border-white/10 rounded-2xl">
-                              <p className="text-[#6b7280] text-[10px] uppercase font-bold tracking-widest italic">Nenhuma análise registrada.</p>
-                            </div>
-                          )
-                        )}
+                      <div>
+                        <p className="text-[13px] font-bold text-[var(--color-text)] uppercase tracking-wide flex items-center gap-2">
+                          Meu Shape PRO 
+                          <span className="px-1.5 py-0.5 rounded-full bg-[var(--primary)] text-[8px] text-[var(--on-primary)] font-black">ATIVO</span>
+                        </p>
+                        <p className="text-[11px] text-[var(--outline)]">Plano Premium Vitalício</p>
                       </div>
                     </div>
-                  )}
+                    <div className="absolute -right-4 -top-4 w-20 h-20 bg-[var(--primary)]/10 rounded-full blur-2xl group-hover:scale-150 transition-all"></div>
+                  </div>
 
-                  {profileTab === "fotos" && (
-                    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                      <div className="flex items-center justify-between">
-                        <h3 className="text-xs font-black uppercase tracking-widest text-white/40">Check-in de Progresso</h3>
-                        <button 
-                          onClick={() => setShowCheckInModal(true)}
-                          className="px-4 py-2 bg-[#00ff88] text-black text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg shadow-[#00ff88]/20"
-                        >
-                          + Nova Entrada
-                        </button>
+                  <button className="w-full flex items-center justify-between p-5 rounded-2xl hover:bg-white/5 transition-all text-left mt-8">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-red-400/10 flex items-center justify-center">
+                        <LogOut className="w-5 h-5 text-red-400" />
                       </div>
-
-                      {/* Comparison Tool */}
-                      {progressCheckIns.length >= 2 && (
-                        <div className="bg-[#0d1117] border border-white/5 rounded-[32px] p-6 space-y-4">
-                           <div className="flex items-center justify-between mb-2">
-                             <h4 className="text-[10px] font-black uppercase text-[#00ff88]">Modo Comparação (Ghost)</h4>
-                             <button 
-                              onClick={() => setShowGhostOverlay(!showGhostOverlay)}
-                              className={`px-3 py-1 rounded-lg text-[8px] font-black uppercase border transition-all ${showGhostOverlay ? 'bg-[#ffb800] text-black border-[#ffb800]' : 'text-[#6b7280] border-white/10'}`}
-                             >
-                              {showGhostOverlay ? 'Desativar' : 'Ativar'}
-                             </button>
-                           </div>
-
-                           {showGhostOverlay && (
-                             <div className="relative aspect-[3/4] rounded-2xl overflow-hidden border border-white/10 max-w-sm mx-auto group">
-                                <img 
-                                  src={progressCheckIns[0].photos.front} 
-                                  className="absolute inset-0 w-full h-full object-cover" 
-                                />
-                                <img 
-                                  src={progressCheckIns[progressCheckIns.length-1].photos.front} 
-                                  className="absolute inset-0 w-full h-full object-cover" 
-                                  style={{ opacity: ghostSlider / 100 }}
-                                />
-                                <div className="absolute bottom-4 left-4 right-4 z-10">
-                                   <input 
-                                    type="range" min="0" max="100" value={ghostSlider}
-                                    onChange={(e) => setGhostSlider(Number(e.target.value))}
-                                    className="w-full accent-[#00ff88]"
-                                   />
-                                   <div className="flex justify-between mt-2">
-                                      <span className="text-[8px] font-black text-white/40 uppercase">Antiga</span>
-                                      <span className="text-[8px] font-black text-[#00ff88] uppercase">Recente</span>
-                                   </div>
-                                </div>
-                             </div>
-                           )}
-                        </div>
-                      )}
-
-                      {/* Gallery */}
-                      <div className="grid grid-cols-2 gap-4">
-                        {progressCheckIns.length > 0 ? progressCheckIns.map((checkin: any) => (
-                          <div key={checkin.id} className="relative group aspect-[3/4] rounded-3xl overflow-hidden border border-white/5 bg-white/5">
-                            <img src={checkin.photos.front} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-700" />
-                            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-4 flex flex-col justify-end">
-                              <p className="text-[10px] font-bold text-[#00ff88] uppercase">{checkin.date}</p>
-                              <p className="text-lg font-black text-white leading-tight">{checkin.weight}kg</p>
-                            </div>
-                            <div className="absolute top-3 right-3 px-2 py-1 bg-black/40 backdrop-blur-md rounded-lg text-[8px] font-black text-white/60">
-                              {checkin.date}
-                            </div>
-                          </div>
-                        )) : (
-                          <div className="col-span-2 p-12 text-center border border-dashed border-white/10 rounded-[32px]">
-                            <Camera className="w-8 h-8 text-[#6b7280] mx-auto opacity-20 mb-3" />
-                            <p className="text-[#6b7280] text-[10px] uppercase font-bold tracking-widest italic">Nenhum check-in fotográfico.</p>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Vertical Timeline */}
-                      {progressCheckIns.length > 0 && (
-                        <div className="relative pl-8 space-y-6 before:absolute before:left-3 before:top-2 before:bottom-2 before:w-[2px] before:bg-white/5">
-                          {progressCheckIns.map((m, i) => (
-                            <div key={i} className="relative">
-                              <div className="absolute -left-8 top-1.5 w-6 h-6 rounded-full bg-[#0d1117] border-2 border-[#00ff88] z-10" />
-                              <div className="bg-[#0d1117] border border-white/5 rounded-2xl p-4 flex items-center justify-between">
-                                <div>
-                                  <p className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest">{m.date}</p>
-                                  <p className="text-sm font-black text-white">{m.weight}kg</p>
-                                </div>
-                                <div className="text-right">
-                                  <p className="text-[10px] font-black text-[#00ff88]">{i < progressCheckIns.length - 1 ? (m.weight - progressCheckIns[i+1].weight).toFixed(1) + 'kg' : '--'}</p>
-                                  <p className="text-[9px] text-[#6b7280] uppercase font-bold">BF: {m.bf || '--'}%</p>
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
+                      <p className="text-[13px] font-bold text-red-400 uppercase tracking-wide">Sair da Conta</p>
                     </div>
-                  )}
-
-                  {profileTab === "musculos" && (
-                    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                      <div className="text-center space-y-1">
-                        <h3 className="text-sm font-black text-white uppercase italic">Bio-Mapeamento de Fadiga</h3>
-                        <p className="text-[10px] text-[#6b7280]">Toque em um grupo muscular para ver detalhes.</p>
-                      </div>
-
-                      {/* Muscle SVG Map */}
-                      <div className="bg-[#0d1117] border border-white/5 rounded-[40px] p-8 flex justify-center gap-8 relative overflow-hidden">
-                         <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-[#00ff88]/5 via-transparent to-transparent"></div>
-                         
-                         {/* Simple Body Outline Simulation */}
-                         <div className="relative w-48 h-80 flex gap-4">
-                            {/* Front View */}
-                            <div className="flex-1 relative">
-                               <div className="relative w-full h-full opacity-80 scale-110">
-                                  <svg viewBox="0 0 100 200" className="w-full h-full drop-shadow-[0_0_15px_rgba(0,0,0,0.5)]">
-                                     {/* Simple stylized paths for muscles */}
-                                     <path d="M40 10 Q50 5 60 10 L50 20 Z" fill="#374151" /> {/* Head */}
-                                     {/* Shoulders */}
-                                     <circle cx="30" cy="35" r="8" fill={getMuscleStatus('Ombros').color} onClick={() => setSelectedMuscle('Ombros')} className="cursor-pointer" />
-                                     <circle cx="70" cy="35" r="8" fill={getMuscleStatus('Ombros').color} onClick={() => setSelectedMuscle('Ombros')} className="cursor-pointer" />
-                                     {/* Peito */}
-                                     <rect x="35" y="32" width="15" height="15" rx="2" fill={getMuscleStatus('Peito').color} onClick={() => setSelectedMuscle('Peito')} className="cursor-pointer" />
-                                     <rect x="50" y="32" width="15" height="15" rx="2" fill={getMuscleStatus('Peito').color} onClick={() => setSelectedMuscle('Peito')} className="cursor-pointer" />
-                                     {/* Braços */}
-                                     <path d="M22 35 L18 70" stroke={getMuscleStatus('Bíceps').color} strokeWidth="6" strokeLinecap="round" onClick={() => setSelectedMuscle('Bíceps')} className="cursor-pointer" />
-                                     <path d="M78 35 L82 70" stroke={getMuscleStatus('Bíceps').color} strokeWidth="6" strokeLinecap="round" onClick={() => setSelectedMuscle('Bíceps')} className="cursor-pointer" />
-                                     {/* Abdômen */}
-                                     <rect x="40" y="50" width="20" height="25" rx="2" fill={getMuscleStatus('Abdômen').color} onClick={() => setSelectedMuscle('Abdômen')} className="cursor-pointer" />
-                                     {/* Pernas */}
-                                     <path d="M38 75 L35 140" stroke={getMuscleStatus('Quadríceps').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Quadríceps')} className="cursor-pointer" />
-                                     <path d="M62 75 L65 140" stroke={getMuscleStatus('Quadríceps').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Quadríceps')} className="cursor-pointer" />
-                                  </svg>
-                                  <p className="text-[7px] font-black text-white/20 uppercase text-center mt-2">FRENTE</p>
-                               </div>
-                            </div>
-                            {/* Back View */}
-                            <div className="flex-1 relative">
-                               <div className="relative w-full h-full opacity-80 scale-110">
-                                  <svg viewBox="0 0 100 200" className="w-full h-full drop-shadow-[0_0_15px_rgba(0,0,0,0.5)]">
-                                     <path d="M40 10 Q50 5 60 10 L50 20 Z" fill="#374151" />
-                                     {/* Costas */}
-                                     <path d="M30 32 L70 32 L65 60 L35 60 Z" fill={getMuscleStatus('Costas Superior').color} onClick={() => setSelectedMuscle('Costas Superior')} className="cursor-pointer" />
-                                     <rect x="42" y="62" width="16" height="10" fill={getMuscleStatus('Costas Inferior').color} onClick={() => setSelectedMuscle('Costas Inferior')} className="cursor-pointer" />
-                                     {/* Tríceps */}
-                                     <path d="M22 35 L18 70" stroke={getMuscleStatus('Tríceps').color} strokeWidth="6" strokeLinecap="round" onClick={() => setSelectedMuscle('Tríceps')} className="cursor-pointer" />
-                                     <path d="M78 35 L82 70" stroke={getMuscleStatus('Tríceps').color} strokeWidth="6" strokeLinecap="round" onClick={() => setSelectedMuscle('Tríceps')} className="cursor-pointer" />
-                                     {/* Glúteos */}
-                                     <circle cx="42" cy="80" r="7" fill={getMuscleStatus('Glúteos').color} onClick={() => setSelectedMuscle('Glúteos')} className="cursor-pointer" />
-                                     <circle cx="58" cy="80" r="7" fill={getMuscleStatus('Glúteos').color} onClick={() => setSelectedMuscle('Glúteos')} className="cursor-pointer" />
-                                     {/* Pernas Tras */}
-                                     <path d="M38 85 L35 140" stroke={getMuscleStatus('Posteriores').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Posteriores')} className="cursor-pointer" />
-                                     <path d="M62 85 L65 140" stroke={getMuscleStatus('Posteriores').color} strokeWidth="10" strokeLinecap="round" onClick={() => setSelectedMuscle('Posteriores')} className="cursor-pointer" />
-                                  </svg>
-                                  <p className="text-[7px] font-black text-white/20 uppercase text-center mt-2">COSTAS</p>
-                               </div>
-                            </div>
-                         </div>
-                      </div>
-
-                      {/* Fatigue Legend */}
-                      <div className="flex items-center justify-center gap-4">
-                         {[
-                          { label: 'Descansado', color: 'bg-[#00ff88]' },
-                          { label: 'Leve', color: 'bg-[#ffb800]' },
-                          { label: 'Fadigado', color: 'bg-[#ff4444]' },
-                          { label: 'Sem Dados', color: 'bg-[#374151]' },
-                         ].map(l => (
-                           <div key={l.label} className="flex items-center gap-1.5">
-                              <div className={`w-2 h-2 rounded-full ${l.color}`}></div>
-                              <span className="text-[8px] font-bold text-[#6b7280] uppercase tracking-widest">{l.label}</span>
-                           </div>
-                         ))}
-                      </div>
-
-                      {/* Muscle Details Panel */}
-                      <AnimatePresence>
-                        {selectedMuscle && (
-                          <motion.div 
-                            initial={{ height: 0, opacity: 0 }}
-                            animate={{ height: 'auto', opacity: 1 }}
-                            exit={{ height: 0, opacity: 0 }}
-                            className="bg-[#00ff88]/5 border border-[#00ff88]/20 rounded-3xl p-6 relative overflow-hidden"
-                          >
-                             <button 
-                              onClick={() => setSelectedMuscle(null)}
-                              className="absolute top-4 right-4 p-1 hover:bg-white/5 rounded-full"
-                             >
-                              <X className="w-4 h-4 text-[#6b7280]" />
-                             </button>
-                             <div className="flex items-start gap-4">
-                                <div className={`p-3 rounded-2xl ${getMuscleStatus(selectedMuscle).bg}`}>
-                                   <Activity className="w-6 h-6 text-black" />
-                                </div>
-                                <div className="space-y-1">
-                                   <p className="text-[10px] font-bold text-[#6b7280] uppercase tracking-[0.2em]">Detalhes de Grupo</p>
-                                   <h4 className="text-xl font-black text-white uppercase italic">{selectedMuscle}</h4>
-                                   <div className="flex items-center gap-1.5">
-                                      <span className={`text-[10px] font-black uppercase ${getMuscleStatus(selectedMuscle).text}`}>Status: {getMuscleStatus(selectedMuscle).status}</span>
-                                   </div>
-                                </div>
-                             </div>
-                             
-                             <div className="grid grid-cols-2 gap-4 mt-6">
-                                <div className="space-y-1">
-                                   <p className="text-[9px] font-bold text-[#6b7280] uppercase">Último Treino</p>
-                                   <p className="text-sm font-black text-white">Há {getMuscleStatus(selectedMuscle).days} dias</p>
-                                </div>
-                                <div className="space-y-1">
-                                   <p className="text-[9px] font-bold text-[#6b7280] uppercase">Próximo Treino</p>
-                                   <p className="text-sm font-black text-[#00ff88]">
-                                      {Number(getMuscleStatus(selectedMuscle).days) >= 3 ? 'Pronto Agora' : `Daqui ${3 - (Number(getMuscleStatus(selectedMuscle).days) || 0)} dias`}
-                                   </p>
-                                </div>
-                             </div>
-                             
-                             <div className="mt-4 pt-4 border-t border-white/5">
-                                <p className="text-[10px] font-black text-[#00ff88] uppercase mb-1">Dica de Recuperação</p>
-                                <p className="text-xs text-white/60">
-                                   Priorize proteína (2g/kg) e sono de qualidade (7-9h) para maximizar a hipertrofia e reparação das fibras musculares.
-                                </p>
-                             </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-
-                      {/* Best Workout Recommendation */}
-                      <div className="bg-[#00ff88]/5 border border-[#00ff88]/20 rounded-[32px] p-6 relative group overflow-hidden">
-                         <div className="flex items-center justify-between relative z-10">
-                            <div className="space-y-1">
-                               <p className="text-[10px] font-black text-[#00ff88] uppercase tracking-widest">Recomendação do Dia</p>
-                               <h4 className="text-lg font-black text-white uppercase italic">Full Body / Foco Core</h4>
-                               <p className="text-[10px] text-[#6b7280]">Músculos descansados: Ombros, Glúteos e Abdômen.</p>
-                            </div>
-                            <button 
-                              onClick={() => setActiveTab('training')}
-                              className="px-4 py-3 bg-[#00ff88] text-black rounded-2xl transition-all hover:scale-105 active:scale-95"
-                            >
-                              <Play className="w-5 h-5 fill-current" />
-                            </button>
-                         </div>
-                         <div className="absolute top-0 right-0 w-32 h-64 bg-[#00ff88]/5 -rotate-45 translate-x-12 translate-y-[-20%] pointer-events-none"></div>
-                      </div>
-
-                      {/* List of Muscle Groups */}
-                      <div className="grid gap-3">
-                         {['Peito', 'Costas Superior', 'Ombros', 'Bíceps', 'Tríceps', 'Abdômen', 'Quadríceps', 'Posteriores', 'Glúteos'].map(muscle => {
-                            const status = getMuscleStatus(muscle);
-                            return (
-                              <div key={muscle} className="bg-[#0d1117] border border-white/5 rounded-2xl p-4 flex items-center justify-between group hover:border-white/10 transition-all">
-                                 <div className="flex items-center gap-3">
-                                    <div className={`w-2 h-8 rounded-full ${status.bg}`} />
-                                    <div>
-                                       <p className="text-xs font-black text-white uppercase">{muscle}</p>
-                                       <p className="text-[10px] text-[#6b7280]">Há {status.days} dias atrás</p>
-                                    </div>
-                                 </div>
-                                 <div className="text-right">
-                                    <p className={`text-[10px] font-black uppercase tracking-widest ${status.text}`}>{status.status}</p>
-                                    <div className="w-20 h-1 bg-white/5 rounded-full mt-1.5 overflow-hidden">
-                                       <div className={`h-full ${status.bg}`} style={{ width: `${Math.max(0, 100 - ((Number(status.days) || 0) * 20))}%` }}></div>
-                                    </div>
-                                 </div>
-                              </div>
-                            )
-                         })}
-                      </div>
-                    </div>
-                  )}
-                </div>
+                  </button>
+                </section>
               </motion.div>
             )}
             {activeTab === "coach" && (
@@ -4702,23 +4554,23 @@ export default function App() {
                 key="coach"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                className="max-w-3xl mx-auto h-[70vh] md:h-[600px] flex flex-col rounded-3xl bg-white/[0.02] border border-white/5 overflow-hidden"
+                className="max-w-3xl mx-auto h-[70vh] md:h-[600px] flex flex-col rounded-3xl bg-black/[0.02] border border-[var(--color-border-subtle)] overflow-hidden"
               >
-                <div className="p-6 border-b border-white/5 flex items-center justify-between bg-black/50">
+                <div className="p-6 border-b border-[var(--color-border-subtle)] flex items-center justify-between bg-black/50">
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-emerald-500 flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.3)]">
-                      <Shield className="w-6 h-6 text-black" />
+                    <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center shadow-[0_0_15px_rgba(37,99,235,0.3)]">
+                      <Shield className="w-6 h-6 text-white" />
                     </div>
                     <div>
                       <h4 className="font-bold text-sm">Treinador IA Elite</h4>
-                      <div className="text-[10px] text-emerald-500 font-bold uppercase tracking-widest flex items-center gap-1">
-                        <div className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse" />{" "}
+                      <div className="text-[10px] text-blue-600 font-bold uppercase tracking-widest flex items-center gap-1">
+                        <div className="w-1 h-1 rounded-full bg-blue-600 animate-pulse" />{" "}
                         Online Agora
                       </div>
                     </div>
                   </div>
-                  <button className="p-2 hover:bg-white/5 rounded-full transition-all">
-                    <Info className="w-5 h-5 text-white/20" />
+                  <button className="p-2 hover:bg-[var(--color-overlay)] rounded-full transition-all">
+                    <Info className="w-5 h-5 text-[var(--color-text)]/20" />
                   </button>
                 </div>
 
@@ -4743,7 +4595,7 @@ export default function App() {
                           <button
                             key={q}
                             onClick={() => handleSendMessage(q)}
-                            className="p-3 bg-white/5 border border-white/10 rounded-xl text-[10px] font-bold text-white/60 hover:bg-emerald-500 hover:text-black hover:border-emerald-400 transition-all text-left"
+                            className="p-3 bg-[var(--color-overlay)] border border-[var(--color-border)] rounded-xl text-[10px] font-bold text-[var(--color-text)]/60 hover:bg-blue-600 hover:text-white hover:border-blue-500 transition-all text-left"
                           >
                             {q}
                           </button>
@@ -4757,7 +4609,7 @@ export default function App() {
                       className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                     >
                       <div
-                        className={`max-w-[90%] p-4 rounded-2xl text-sm ${msg.role === "user" ? "bg-emerald-500 text-black font-medium" : "bg-white/5 border border-white/10 text-white/80"}`}
+                        className={`max-w-[90%] p-4 rounded-2xl text-sm ${msg.role === "user" ? "bg-blue-600 text-white font-medium" : "bg-[var(--color-overlay)] border border-[var(--color-border)] text-[var(--color-text)]/80"}`}
                       >
                         {msg.role === "user"
                           ? msg.text
@@ -4767,16 +4619,16 @@ export default function App() {
                   ))}
                   {isChatLoading && (
                     <div className="flex justify-start">
-                      <div className="bg-white/5 border border-white/10 p-4 rounded-2xl flex gap-1">
-                        <div className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce" />
-                        <div className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce [animation-delay:0.2s]" />
-                        <div className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce [animation-delay:0.4s]" />
+                      <div className="bg-[var(--color-overlay)] border border-[var(--color-border)] p-4 rounded-2xl flex gap-1">
+                        <div className="w-1 h-1 bg-blue-600 rounded-full animate-bounce" />
+                        <div className="w-1 h-1 bg-blue-600 rounded-full animate-bounce [animation-delay:0.2s]" />
+                        <div className="w-1 h-1 bg-blue-600 rounded-full animate-bounce [animation-delay:0.4s]" />
                       </div>
                     </div>
                   )}
                 </div>
 
-                <div className="p-6 bg-black/50 border-t border-white/5">
+                <div className="p-6 bg-black/50 border-t border-[var(--color-border-subtle)]">
                   <div className="relative">
                     <input
                       value={inputMessage}
@@ -4785,11 +4637,11 @@ export default function App() {
                         e.key === "Enter" && handleSendMessage()
                       }
                       placeholder="Pergunte algo ao Coach..."
-                      className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 pr-16 focus:outline-none focus:border-emerald-500 transition-all"
+                      className="w-full bg-[var(--color-overlay)] border border-[var(--color-border)] rounded-2xl px-6 py-4 pr-16 focus:outline-none focus:border-blue-600 transition-all"
                     />
                     <button
                       onClick={() => handleSendMessage()}
-                      className="absolute right-2 top-2 bottom-2 px-4 bg-emerald-500 text-black rounded-xl font-bold hover:bg-emerald-400 transition-all"
+                      className="absolute right-2 top-2 bottom-2 px-4 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-500 transition-all"
                     >
                       <Zap className="w-4 h-4 fill-current" />
                     </button>
@@ -4807,8 +4659,8 @@ export default function App() {
                 exit={{ opacity: 0, y: 20 }}
                 className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/80 backdrop-blur-sm"
               >
-                <div className="bg-[#111] border border-white/10 rounded-3xl max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col">
-                  <div className="p-6 border-b border-white/5 flex items-center justify-between">
+                <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-3xl max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col">
+                  <div className="p-6 border-b border-[var(--color-border-subtle)] flex items-center justify-between">
                     <h3 className="text-xl font-black uppercase italic">
                       {selectedExercise}
                     </h3>
@@ -4817,7 +4669,7 @@ export default function App() {
                         setSelectedExercise(null);
                         setExerciseDetail(null);
                       }}
-                      className="p-2 hover:bg-white/5 rounded-full"
+                      className="p-2 hover:bg-[var(--color-overlay)] rounded-full"
                     >
                       <RefreshCw className="w-5 h-5 rotate-45" />
                     </button>
@@ -4825,8 +4677,8 @@ export default function App() {
                   <div className="flex-1 overflow-y-auto p-8 scrollbar-hide">
                     {isFetchingExercise ? (
                       <div className="flex flex-col items-center justify-center py-12 space-y-4">
-                        <RefreshCw className="w-8 h-8 text-emerald-500 animate-spin" />
-                        <p className="text-xs font-bold uppercase tracking-widest text-white/40">
+                        <RefreshCw className="w-8 h-8 text-blue-600 animate-spin" />
+                        <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-text)]/40">
                           Consultando Biomecânica...
                         </p>
                       </div>
@@ -4849,23 +4701,23 @@ export default function App() {
                 animate={{ y: 0 }}
                 exit={{ y: "100%" }}
                 transition={{ type: "spring", damping: 25, stiffness: 200 }}
-                className="fixed inset-0 z-[100] bg-[var(--color-bg-deep)] text-white flex flex-col"
+                className="fixed inset-0 z-[100] bg-[var(--color-bg-deep)] text-[var(--color-text)] flex flex-col"
               >
                 {/* Header */}
-                <div className="h-[72px] px-6 flex items-center justify-between border-b border-white/5 bg-[var(--color-bg-card)]/50 backdrop-blur-xl">
+                <div className="h-[72px] px-6 flex items-center justify-between border-b border-[var(--color-border-subtle)] bg-[var(--color-bg-card)]/50 backdrop-blur-xl">
                   <button 
                     onClick={() => {
                       if (confirm('Deseja realmente sair do treino? Seu progresso atual não será salvo.')) {
                         setIsWorkoutActive(false);
                       }
                     }}
-                    className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center text-[#6b7280] hover:text-white transition-colors"
+                    className="w-10 h-10 rounded-full bg-[var(--color-overlay)] flex items-center justify-center text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
                   >
                     <X className="w-5 h-5" />
                   </button>
                   <div className="text-center">
-                    <h3 className="text-[10px] font-bold text-[#6b7280] uppercase tracking-[0.2em] mb-0.5">Treino Ativo</h3>
-                    <p className="text-[14px] font-display font-medium text-white uppercase tracking-wider">{activeWorkoutSession.dayName}</p>
+                    <h3 className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-[0.2em] mb-0.5">Treino Ativo</h3>
+                    <p className="text-[14px] font-display font-medium text-[var(--color-text)] uppercase tracking-wider">{activeWorkoutSession.dayName}</p>
                   </div>
                   <div className="flex items-center gap-2 bg-[var(--color-neon)]/10 px-3 py-1.5 rounded-xl border border-[var(--color-neon)]/20">
                     <Clock className="w-3.5 h-3.5 text-[var(--color-neon)]" />
@@ -4875,11 +4727,11 @@ export default function App() {
 
                 {/* Progress Bar Top */}
                 <div className="px-6 py-4 bg-[var(--color-bg-card)]/30">
-                  <div className="flex justify-between text-[9px] font-bold text-[#6b7280] uppercase tracking-widest mb-2">
+                  <div className="flex justify-between text-[9px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest mb-2">
                     <span>Progresso do Treino</span>
                     <span>{currentExerciseIndex + 1} de {activeWorkoutSession.exercises.length} exercícios</span>
                   </div>
-                  <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
+                  <div className="h-1.5 w-full bg-[var(--color-overlay)] rounded-full overflow-hidden">
                     <div 
                       className="h-full bg-[var(--color-neon)] shadow-[0_0_10px_var(--color-neon)] transition-all duration-500" 
                       style={{ width: `${((currentExerciseIndex + 1) / activeWorkoutSession.exercises.length) * 100}%` }}
@@ -4898,22 +4750,22 @@ export default function App() {
                         <Trophy className="w-12 h-12 text-[var(--color-neon)]" />
                       </div>
                       <div className="space-y-2">
-                        <h2 className="text-[28px] font-display font-bold text-white uppercase tracking-tight">TREINO FINALIZADO!</h2>
-                        <p className="text-[#6b7280] text-[14px] max-w-xs">Parabéns! Mais um degrau subido na sua evolução física. O shape está vindo.</p>
+                        <h2 className="text-[28px] font-display font-bold text-[var(--color-text)] uppercase tracking-tight">TREINO FINALIZADO!</h2>
+                        <p className="text-[var(--color-text-muted)] text-[14px] max-w-xs">Parabéns! Mais um degrau subido na sua evolução física. O shape está vindo.</p>
                       </div>
                       <div className="grid grid-cols-2 gap-4 w-full max-w-sm">
-                        <div className="bg-white/5 rounded-2xl p-4 border border-white/5">
-                          <p className="text-[10px] font-bold text-[#6b7280] uppercase mb-1">Tempo Total</p>
-                          <p className="text-[18px] font-black text-white">{formatTime(elapsedTime)}</p>
+                        <div className="bg-[var(--color-overlay)] rounded-2xl p-4 border border-[var(--color-border-subtle)]">
+                          <p className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase mb-1">Tempo Total</p>
+                          <p className="text-[18px] font-black text-[var(--color-text)]">{formatTime(elapsedTime)}</p>
                         </div>
-                        <div className="bg-white/5 rounded-2xl p-4 border border-white/5">
-                          <p className="text-[10px] font-bold text-[#6b7280] uppercase mb-1">Exercícios</p>
-                          <p className="text-[18px] font-black text-white">{activeWorkoutSession.exercises.length}</p>
+                        <div className="bg-[var(--color-overlay)] rounded-2xl p-4 border border-[var(--color-border-subtle)]">
+                          <p className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase mb-1">Exercícios</p>
+                          <p className="text-[18px] font-black text-[var(--color-text)]">{activeWorkoutSession.exercises.length}</p>
                         </div>
                       </div>
                       <button 
                         onClick={() => setIsWorkoutActive(false)}
-                        className="w-full max-w-sm py-4 bg-[var(--color-neon)] text-[#050505] font-black uppercase tracking-widest rounded-2xl shadow-[0_0_25px_rgba(0,255,136,0.4)]"
+                        className="w-full max-w-sm py-4 bg-[var(--color-neon)] text-[#ffffff] font-black uppercase tracking-widest rounded-2xl shadow-[0_0_25px_rgba(0,255,136,0.4)]"
                       >
                         Salvar e Sair
                       </button>
@@ -4921,25 +4773,47 @@ export default function App() {
                   ) : (
                     <div className="p-6 space-y-8">
                       {/* Exercise Header */}
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-black bg-[var(--color-neon)]/20 text-[var(--color-neon)] px-2 py-0.5 rounded-md uppercase tracking-widest border border-[var(--color-neon)]/20">
-                            {activeWorkoutSession.exercises[currentExerciseIndex].musculo_foco || 'Base'}
-                          </span>
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-black bg-[var(--primary)]/20 text-[var(--primary)] px-2 py-0.5 rounded-md uppercase tracking-widest border border-[var(--primary)]/20">
+                                    {activeWorkoutSession.exercises[currentExerciseIndex].musculo_foco || 'Base'}
+                                </span>
+                                <div className="flex items-center gap-1.5 text-[8px] font-black text-[var(--secondary)] uppercase tracking-widest bg-[var(--secondary)]/10 px-2 py-0.5 rounded border border-[var(--secondary)]/20">
+                                    <Zap className="w-3 h-3" />
+                                    <span>Fibra Tipo II (Explosiva)</span>
+                                </div>
+                            </div>
+                            {activeWorkoutSession.isAdapted && (
+                                <div className="flex items-center gap-1 text-[8px] font-black text-amber-500 uppercase tracking-widest bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20 animate-pulse">
+                                    <ShieldAlert className="w-3 h-3" />
+                                    <span>Protocolo Adaptado</span>
+                                </div>
+                            )}
                         </div>
-                        <h2 className="text-[32px] font-display font-bold leading-none text-white">{activeWorkoutSession.exercises[currentExerciseIndex].nome}</h2>
+                        <h2 className="text-[36px] font-display font-black leading-none text-[var(--color-text)] uppercase italic tracking-tighter">{activeWorkoutSession.exercises[currentExerciseIndex].nome}</h2>
+                        <div className="p-4 bg-[var(--color-surface-hover)] rounded-2xl border border-[var(--color-border-subtle)] border-l-4 border-l-[var(--primary)]">
+                           <p className="text-[11px] text-[var(--color-text-muted)] italic leading-relaxed font-medium">
+                              {activeWorkoutSession.exercises[currentExerciseIndex].why || 'Mantenha a cadência controlada na fase excêntrica para máximo recrutamento de fibras.'}
+                           </p>
+                        </div>
                       </div>
 
                       {/* Animation Placeholder */}
-                      <div className="aspect-video w-full bg-[var(--color-bg-card)] rounded-[32px] border border-white/5 flex items-center justify-center relative overflow-hidden group shadow-inner">
-                        <div className="absolute inset-0 bg-gradient-to-t from-[var(--color-bg-deep)] to-transparent opacity-40"></div>
-                        <Dumbbell className="w-16 h-16 text-[var(--color-neon)] opacity-30 animate-pulse" />
-                        <div className="absolute bottom-4 left-4 right-4 flex justify-between items-end">
+                      <div className="aspect-video w-full bg-black rounded-[32px] border border-[var(--color-border-subtle)] flex items-center justify-center relative overflow-hidden group shadow-2xl">
+                        <div className="absolute inset-0 bg-gradient-to-t from-[var(--color-bg-deep)] to-transparent opacity-60"></div>
+                        <Dumbbell className="w-16 h-16 text-[var(--primary)] opacity-40 animate-bounce" />
+                        <div className="absolute inset-x-0 bottom-0 p-6 flex justify-between items-end">
+                            <div className="flex flex-col">
+                                <span className="text-[9px] font-black text-[var(--primary)] uppercase tracking-widest">Atenção Técnica</span>
+                                <span className="text-[12px] font-bold text-white uppercase italic">Pico de Contração de 2s</span>
+                            </div>
                            <button 
                              onClick={() => handleShowExerciseDetail(activeWorkoutSession.exercises[currentExerciseIndex].nome)}
-                             className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest bg-white/5 px-3 py-1.5 rounded-lg border border-white/5 hover:text-white transition-colors"
+                             className="text-[10px] font-black text-white uppercase tracking-widest bg-white/10 backdrop-blur-md px-4 py-2 rounded-xl border border-white/20 hover:bg-white/20 transition-all flex items-center gap-2"
                            >
-                             Ver Dica de Execução
+                             <Info className="w-4 h-4" />
+                             Bio-Guide
                            </button>
                         </div>
                       </div>
@@ -4947,8 +4821,14 @@ export default function App() {
                       {/* Series Tracking */}
                       <div className="space-y-6">
                         <div className="flex items-center justify-between">
-                          <h4 className="text-[12px] font-bold text-[#6b7280] uppercase tracking-widest">Séries & Repetições</h4>
-                          <span className="text-[14px] font-black text-white">Série {currentSetIndex + 1} de {activeWorkoutSession.exercises[currentExerciseIndex].series}</span>
+                          <div className="flex flex-col">
+                            <h4 className="text-[12px] font-black text-[var(--color-text-muted)] uppercase tracking-widest italic">Séries Concluídas</h4>
+                            <span className="text-[18px] font-display font-black text-[var(--color-text)] uppercase">{currentSetIndex + 1} <span className="text-[12px] text-[var(--color-text-muted)]">/ {activeWorkoutSession.exercises[currentExerciseIndex].series}</span></span>
+                          </div>
+                          <div className="flex flex-col items-end">
+                            <h4 className="text-[12px] font-black text-[var(--color-text-muted)] uppercase tracking-widest italic">Peso Total (Est.)</h4>
+                            <span className="text-[18px] font-display font-black text-[var(--primary)] uppercase">{((parseInt(activeWorkoutSession.exercises[currentExerciseIndex].series) || 3) * (60)).toFixed(0)} <span className="text-[12px] text-[var(--color-text-muted)]">KG</span></span>
+                          </div>
                         </div>
 
                         {/* Set Indicators */}
@@ -4956,24 +4836,30 @@ export default function App() {
                           {Array.from({ length: parseInt(activeWorkoutSession.exercises[currentExerciseIndex].series) || 3 }).map((_, i) => (
                             <div 
                               key={i} 
-                              className={`h-1.5 flex-1 rounded-full transition-all duration-500 ${i < currentSetIndex ? 'bg-[var(--color-neon)] shadow-[0_0_8px_var(--color-neon)]' : i === currentSetIndex ? 'bg-white/20 animate-pulse' : 'bg-white/5'}`}
+                              className={`h-2.5 flex-1 rounded-full transition-all duration-700 ${i < currentSetIndex ? 'bg-[var(--primary)] shadow-[0_0_15px_var(--primary-glow)]' : i === currentSetIndex ? 'bg-white/10 animate-pulse border border-[var(--primary)]/30' : 'bg-white/5'}`}
                             ></div>
                           ))}
                         </div>
 
                         {/* Rep Counter */}
-                        <div className="bg-[var(--color-bg-card)] rounded-[32px] p-8 border border-white/5 flex items-center justify-between shadow-2xl relative overflow-hidden">
-                           <div className="absolute top-0 left-0 w-full h-1 bg-[var(--color-neon)]/10"></div>
+                        <div className="bg-[var(--color-surface-hover)] rounded-[32px] p-8 border border-[var(--color-border-subtle)] flex items-center justify-between shadow-2xl relative overflow-hidden group">
+                           <div className="absolute top-0 left-0 w-full h-[4px] bg-gradient-to-r from-[var(--primary)] to-[var(--secondary)]"></div>
                            <div className="text-center flex-1">
-                             <p className="text-[10px] font-bold text-[#6b7280] uppercase tracking-[0.2em] mb-2">Meta</p>
-                             <p className="text-[32px] font-black text-white">{activeWorkoutSession.exercises[currentExerciseIndex].repeticoes}</p>
+                             <p className="text-[10px] font-black text-[var(--color-text-muted)] uppercase tracking-[0.3em] mb-2 italic">Meta de Reps</p>
+                             <p className="text-[42px] font-display font-black text-[var(--color-text)] italic tracking-tighter leading-none">{activeWorkoutSession.exercises[currentExerciseIndex].repeticoes}</p>
                            </div>
-                           <div className="w-[2px] h-12 bg-white/5"></div>
+                           <div className="w-[1px] h-16 bg-[var(--color-border-subtle)] mx-4"></div>
                            <div className="text-center flex-1">
-                             <p className="text-[10px] font-bold text-[#6b7280] uppercase tracking-[0.2em] mb-2">Sua Carga</p>
-                             <div className="flex items-center justify-center gap-2">
-                                <span className="text-[24px] font-black text-[var(--color-neon)]">—</span>
-                                <span className="text-[10px] font-bold text-[#6b7280]">KG</span>
+                             <p className="text-[10px] font-black text-[var(--color-text-muted)] uppercase tracking-[0.3em] mb-2 italic">Carga Target</p>
+                             <div className="flex flex-col items-center">
+                                <div className="flex items-baseline gap-1">
+                                    <input 
+                                        type="number"
+                                        placeholder="0"
+                                        className="w-16 bg-transparent text-[32px] font-black text-[var(--primary)] text-center outline-none border-b-2 border-transparent focus:border-[var(--primary)] transition-all"
+                                    />
+                                    <span className="text-[12px] font-black text-[var(--color-text-muted)] uppercase">KG</span>
+                                </div>
                              </div>
                            </div>
                         </div>
@@ -4981,47 +4867,54 @@ export default function App() {
 
                       {/* Action Buttons */}
                       {workoutStatus === 'resting' ? (
-                        <div className="bg-[var(--color-neon)]/5 border border-[var(--color-neon)]/20 rounded-[32px] p-8 text-center space-y-6 relative overflow-hidden">
-                          <motion.div 
-                            initial={{ scale: 0.9 }}
-                            animate={{ scale: 1 }}
-                            transition={{ repeat: Infinity, duration: 2, repeatType: 'reverse' }}
-                            className="absolute inset-0 bg-gradient-to-br from-[var(--color-neon)]/5 to-transparent pointer-events-none"
-                          ></motion.div>
+                        <div className="bg-[var(--color-surface-hover)] border border-[var(--color-border-subtle)] rounded-[32px] p-8 text-center space-y-6 relative overflow-hidden shadow-2xl">
+                          <div className="absolute top-0 right-0 p-4">
+                             <Zap className={`w-6 h-6 ${isAdvancedMode ? 'text-[var(--primary)]' : 'text-[var(--outline)]'}`} />
+                          </div>
                           <div className="relative z-10">
-                            <p className="text-[12px] font-bold text-[#6b7280] uppercase tracking-widest mb-2">Tempo de Descanso</p>
-                            <div className="relative w-32 h-32 mx-auto flex items-center justify-center">
+                            <p className="text-[12px] font-black text-[var(--color-text-muted)] uppercase tracking-widest mb-4 italic">Monitor de Recuperação</p>
+                            <div className="relative w-48 h-48 mx-auto flex items-center justify-center">
                               <svg className="w-full h-full -rotate-90">
                                 <circle 
-                                  cx="64" cy="64" r="60" 
+                                  cx="96" cy="96" r="90" 
                                   stroke="currentColor" 
-                                  strokeWidth="6" 
+                                  strokeWidth="4" 
                                   fill="transparent" 
-                                  className="text-white/5"
+                                  className="text-[var(--color-border-subtle)]"
                                 />
                                 <motion.circle 
-                                  cx="64" cy="64" r="60" 
+                                  cx="96" cy="96" r="90" 
                                   stroke="currentColor" 
-                                  strokeWidth="6" 
+                                  strokeWidth="8" 
                                   fill="transparent" 
-                                  className="text-[var(--color-neon)]"
-                                  strokeDasharray="377"
-                                  animate={{ strokeDashoffset: 377 - (377 * (restTimeLeft / 60)) }}
+                                  className="text-[var(--primary)]"
+                                  strokeDasharray="565"
+                                  strokeLinecap="round"
+                                  initial={{ strokeDashoffset: 565 }}
+                                  animate={{ strokeDashoffset: 565 - (565 * (restTimeLeft / 60)) }}
                                   transition={{ duration: 1, ease: 'linear' }}
                                 />
                               </svg>
-                              <span className="absolute text-[32px] font-mono font-black text-white">{restTimeLeft}s</span>
+                              <div className="absolute flex flex-col items-center">
+                                <span className="text-[48px] font-display font-black text-[var(--color-text)] tracking-tighter leading-none">{restTimeLeft}</span>
+                                <span className="text-[10px] font-black text-[var(--primary)] uppercase tracking-widest mt-1">segundos</span>
+                              </div>
                             </div>
                           </div>
-                          <button 
-                            onClick={() => {
-                              setWorkoutStatus('exercising');
-                              setRestTimeLeft(0);
-                            }}
-                            className="w-full relative z-10 py-4 bg-white/5 text-white font-bold uppercase tracking-widest rounded-2xl border border-white/10 hover:bg-white/10 transition-all"
-                          >
-                            Pular Descanso
-                          </button>
+                          <div className="grid grid-cols-1 gap-3 relative z-10">
+                            <button 
+                              onClick={() => {
+                                setWorkoutStatus('exercising');
+                                setRestTimeLeft(0);
+                              }}
+                              className="w-full py-5 bg-[var(--primary)] text-white font-black uppercase tracking-[0.2em] rounded-[20px] shadow-[0_10px_20px_var(--primary-glow)] active:scale-95 transition-all text-sm"
+                            >
+                              Voltar à Série
+                            </button>
+                            <p className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase">
+                               {isAdvancedMode ? "MODO ELITE: Tempo sugerido, controle manual." : "Aguarde o fim do descanso ou pule."}
+                            </p>
+                          </div>
                         </div>
                       ) : (
                         <button 
@@ -5029,9 +4922,14 @@ export default function App() {
                             const totalSets = parseInt(activeWorkoutSession.exercises[currentExerciseIndex].series) || 3;
                             if (currentSetIndex + 1 < totalSets) {
                               setCurrentSetIndex(prev => prev + 1);
-                              setWorkoutStatus('resting');
-                              setRestTimeLeft(60);
-                              if (navigator.vibrate) navigator.vibrate(100);
+                              if (isAdvancedMode) {
+                                  setWorkoutStatus('exercising');
+                                  if (navigator.vibrate) navigator.vibrate([50, 30, 50]);
+                              } else {
+                                  setWorkoutStatus('resting');
+                                  setRestTimeLeft(60);
+                                  if (navigator.vibrate) navigator.vibrate(100);
+                              }
                             } else {
                               // Next exercise
                               if (currentExerciseIndex + 1 < activeWorkoutSession.exercises.length) {
@@ -5045,7 +4943,7 @@ export default function App() {
                               }
                             }
                           }}
-                          className="w-full h-[80px] bg-[var(--color-neon)] text-[#050505] font-black text-[16px] uppercase tracking-[0.2em] rounded-[24px] shadow-[0_10px_30px_rgba(0,255,136,0.3)] active:scale-[0.98] transition-all flex items-center justify-center gap-3"
+                          className="w-full h-[80px] bg-[var(--color-neon)] text-[#ffffff] font-black text-[16px] uppercase tracking-[0.2em] rounded-[24px] shadow-[0_10px_30px_rgba(37,99,235,0.2)] active:scale-[0.98] transition-all flex items-center justify-center gap-3"
                         >
                           <Check className="w-6 h-6 stroke-[4px]" /> Concluir Série
                         </button>
@@ -5056,7 +4954,7 @@ export default function App() {
 
                 {/* Footer Controls */}
                 {workoutStatus !== 'completed' && (
-                  <div className="p-6 bg-[var(--color-bg-card)]/50 backdrop-blur-xl border-t border-white/5 flex gap-4">
+                  <div className="p-6 bg-[var(--color-bg-card)]/50 backdrop-blur-xl border-t border-[var(--color-border-subtle)] flex gap-4">
                     <button 
                       disabled={currentExerciseIndex === 0}
                       onClick={() => {
@@ -5064,7 +4962,7 @@ export default function App() {
                         setCurrentSetIndex(0);
                         setWorkoutStatus('exercising');
                       }}
-                      className="flex-1 py-4 bg-white/5 text-[#6b7280] disabled:opacity-30 font-bold uppercase tracking-widest rounded-2xl border border-white/5"
+                      className="flex-1 py-4 bg-[var(--color-overlay)] text-[var(--color-text-muted)] disabled:opacity-30 font-bold uppercase tracking-widest rounded-2xl border border-[var(--color-border-subtle)]"
                     >
                       Anterior
                     </button>
@@ -5078,7 +4976,7 @@ export default function App() {
                           finishWorkoutSession();
                         }
                       }}
-                      className="flex-1 py-4 bg-white/10 text-white font-bold uppercase tracking-widest rounded-2xl border border-white/10"
+                      className="flex-1 py-4 bg-[var(--color-border)] text-[var(--color-text)] font-bold uppercase tracking-widest rounded-2xl border border-[var(--color-border)]"
                     >
                       {currentExerciseIndex + 1 === activeWorkoutSession.exercises.length ? 'Finalizar' : 'Próximo'}
                     </button>
@@ -5090,25 +4988,51 @@ export default function App() {
         </main>
 
         {/* Bottom Navigation */}
-        <nav className="fixed bottom-6 left-6 right-6 z-[60] bg-[#0d1117]/80 backdrop-blur-2xl border border-white/5 rounded-[32px] pb-[env(safe-area-inset-bottom)] px-4 shadow-[0_10px_30px_rgba(0,0,0,0.5)]">
-          <div className="flex items-center justify-between h-[72px]">
-            {[
-              { id: "dashboard", icon: <Target />, label: "Início" },
-              { id: "recovery", icon: <Activity />, label: "Corpo" },
-              { id: "diet", icon: <Utensils />, label: "Dieta" },
-              { id: "training", icon: <Dumbbell />, label: "Treino" },
-              { id: "profile", icon: <User />, label: "Perfil" },
-            ].map((tab) => (
+        <nav className="fixed bottom-6 left-6 right-6 z-[90] glass-card rounded-[32px] p-2 flex items-center justify-between border-white/5 neo-glow-primary">
+          {(["dashboard", "analyze", "recovery", "training", "diet", "profile"] as const).map(
+            (tab) => (
               <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
-                className={`flex flex-col items-center gap-1 transition-all p-2 rounded-2xl ${activeTab === tab.id ? "text-[var(--color-neon)]" : "text-[#6b7280] hover:text-white"}`}
+                key={tab}
+                onClick={() => {
+                  setActiveTab(tab);
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }}
+                className={`flex-1 flex flex-col items-center justify-center gap-1.5 py-4 transition-all relative ${
+                  activeTab === tab
+                    ? "text-[var(--primary)]"
+                    : "text-[var(--color-text-muted)] opacity-50 hover:opacity-100"
+                }`}
               >
-                <div className={`${activeTab === tab.id ? "scale-100" : "scale-90"}`}>{tab.icon}</div>
-                <span className="text-[9px] uppercase font-bold tracking-widest">{tab.label}</span>
+                {activeTab === tab && (
+                  <motion.div
+                    layoutId="activeTabGlow"
+                    className="absolute inset-0 bg-[var(--primary)]/5 rounded-2xl blur-md"
+                  />
+                )}
+                {tab === "dashboard" && <Target size={22} className={activeTab === tab ? "neo-glow-text" : ""} />}
+                {tab === "analyze" && <Camera size={22} className={activeTab === tab ? "neo-glow-text" : ""} />}
+                {tab === "recovery" && <Activity size={22} className={activeTab === tab ? "neo-glow-text" : ""} />}
+                {tab === "training" && <Dumbbell size={22} className={activeTab === tab ? "neo-glow-text" : ""} />}
+                {tab === "diet" && <Utensils size={22} className={activeTab === tab ? "neo-glow-text" : ""} />}
+                {tab === "profile" && <User size={22} className={activeTab === tab ? "neo-glow-text" : ""} />}
+                
+                <span className="text-[8px] font-black uppercase tracking-[0.1em]">
+                  {tab === "dashboard" ? "Hub" : 
+                   tab === "analyze" ? "Scan" : 
+                   tab === "recovery" ? "Bio" :
+                   tab === "training" ? "Gym" :
+                   tab === "diet" ? "Dieta" : "Perfil"}
+                </span>
+                
+                {activeTab === tab && (
+                  <motion.div 
+                    layoutId="activeTabIndicator"
+                    className="w-1 h-1 bg-[var(--primary)] rounded-full mb-[-8px] shadow-[0_0_8px_var(--primary-glow)]"
+                  />
+                )}
               </button>
-            ))}
-          </div>
+            ),
+          )}
         </nav>
 
         {/* Profile Settings Modal */}
@@ -5124,61 +5048,76 @@ export default function App() {
                 initial={{ opacity: 0, scale: 0.9, y: 20 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.9, y: 20 }}
-                className="relative w-full max-w-lg bg-[#0d1117] border border-white/10 rounded-[32px] overflow-hidden"
+                className="relative w-full max-w-lg bg-[var(--color-bg)] border border-[var(--color-border)] rounded-[32px] overflow-hidden"
               >
-                <div className="p-6 border-b border-white/5 flex items-center justify-between">
-                  <h3 className="text-sm font-black text-white uppercase tracking-widest">Configurações do Perfil</h3>
-                  <button onClick={() => setShowProfileSettings(false)} className="p-2 hover:bg-white/5 rounded-full"><X className="w-5 h-5 text-[#6b7280]" /></button>
+                <div className="p-6 border-b border-[var(--color-border-subtle)] flex items-center justify-between">
+                  <h3 className="text-sm font-black text-[var(--color-text)] uppercase tracking-widest">Configurações do Perfil</h3>
+                  <button onClick={() => setShowProfileSettings(false)} className="p-2 hover:bg-[var(--color-overlay)] rounded-full"><X className="w-5 h-5 text-[var(--color-text-muted)]" /></button>
                 </div>
                 <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto no-scrollbar">
                   {/* Form fields */}
                   <div className="space-y-4">
                      <div className="flex justify-center mb-6">
                         <div className="relative group">
-                           <div className="w-24 h-24 rounded-full bg-gradient-to-br from-[#00ff88] to-[#004d2c] flex items-center justify-center border-2 border-white/10 overflow-hidden">
-                              {profile.avatar ? <img src={profile.avatar} className="w-full h-full object-cover" /> : <User className="w-10 h-10 text-black" />}
-                           </div>
-                           <button className="absolute bottom-0 right-0 p-2 bg-[#00ff88] rounded-full text-black shadow-lg"><Camera className="w-4 h-4" /></button>
+                            <input
+                              type="file"
+                              ref={settingsAvatarInputRef}
+                              className="hidden"
+                              accept="image/*"
+                              onChange={(e) => handleAvatarChange(e, false)}
+                            />
+                            <button 
+                              onClick={() => settingsAvatarInputRef.current?.click()}
+                              className="w-24 h-24 rounded-full bg-[var(--color-surface)] border-2 border-[var(--primary)]/30 flex items-center justify-center overflow-hidden neo-glow-primary relative"
+                            >
+                               {profile.avatar ? <img src={profile.avatar} className="w-full h-full object-cover" /> : <User className="w-10 h-10 text-[var(--outline)]" />}
+                               <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                  <Camera className="w-6 h-6 text-white" />
+                               </div>
+                            </button>
+                            <div className="absolute bottom-0 right-0 p-2 bg-[var(--primary)] rounded-full text-white shadow-lg pointer-events-none">
+                               <Camera className="w-4 h-4" />
+                            </div>
                         </div>
                      </div>
                      <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1.5">
-                           <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest ml-1">Nome Completo</label>
+                           <label className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest ml-1">Nome Completo</label>
                            <input 
                             type="text" value={profile.name || user?.user_metadata?.full_name || ''} 
                             onChange={(e) => setProfile({...profile, name: e.target.value})}
-                            className="w-full bg-white/5 border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:border-[#00ff88]/50 transition-all outline-none"
+                            className="w-full bg-[var(--color-overlay)] border border-[var(--color-border-subtle)] rounded-2xl px-4 py-3 text-sm text-[var(--color-text)] focus:border-[#2563eb]/50 transition-all outline-none"
                            />
                         </div>
                         <div className="space-y-1.5">
-                           <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest ml-1">Idade</label>
+                           <label className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest ml-1">Idade</label>
                            <input 
                             type="number" value={profile.age || ''} onChange={(e) => setProfile({...profile, age: Number(e.target.value)})}
-                            className="w-full bg-white/5 border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:border-[#00ff88]/50 transition-all outline-none"
+                            className="w-full bg-[var(--color-overlay)] border border-[var(--color-border-subtle)] rounded-2xl px-4 py-3 text-sm text-[var(--color-text)] focus:border-[#2563eb]/50 transition-all outline-none"
                            />
                         </div>
                      </div>
                      <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1.5">
-                           <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest ml-1">Peso (kg)</label>
+                           <label className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest ml-1">Peso (kg)</label>
                            <input 
                             type="number" value={profile.weight} onChange={(e) => setProfile({...profile, weight: Number(e.target.value)})}
-                            className="w-full bg-white/5 border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:border-[#00ff88]/50 transition-all outline-none"
+                            className="w-full bg-[var(--color-overlay)] border border-[var(--color-border-subtle)] rounded-2xl px-4 py-3 text-sm text-[var(--color-text)] focus:border-[#2563eb]/50 transition-all outline-none"
                            />
                         </div>
                         <div className="space-y-1.5">
-                           <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest ml-1">Altura (cm)</label>
+                           <label className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest ml-1">Altura (cm)</label>
                            <input 
                             type="number" value={profile.height} onChange={(e) => setProfile({...profile, height: Number(e.target.value)})}
-                            className="w-full bg-white/5 border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:border-[#00ff88]/50 transition-all outline-none"
+                            className="w-full bg-[var(--color-overlay)] border border-[var(--color-border-subtle)] rounded-2xl px-4 py-3 text-sm text-[var(--color-text)] focus:border-[#2563eb]/50 transition-all outline-none"
                            />
                         </div>
                      </div>
                      <div className="space-y-1.5">
-                        <label className="text-[10px] font-bold text-[#6b7280] uppercase tracking-widest ml-1">Objetivo Principal</label>
+                        <label className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest ml-1">Objetivo Principal</label>
                         <select 
                           value={profile.goal} onChange={(e) => setProfile({...profile, goal: e.target.value as any})}
-                          className="w-full bg-white/5 border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:border-[#00ff88]/50 transition-all outline-none appearance-none"
+                          className="w-full bg-[var(--color-overlay)] border border-[var(--color-border-subtle)] rounded-2xl px-4 py-3 text-sm text-[var(--color-text)] focus:border-[#2563eb]/50 transition-all outline-none appearance-none"
                         >
                            <option value="Cutting">Cutting</option>
                            <option value="Bulking">Bulking</option>
@@ -5187,23 +5126,57 @@ export default function App() {
                      </div>
                   </div>
 
-                  <div className="space-y-4 pt-4 border-t border-white/5">
-                     <h4 className="text-[10px] font-black text-white/20 uppercase tracking-widest">Preferências</h4>
-                     <div className="space-y-3">
-                        {[
-                          { label: 'Notificações de Treino', id: 'notif' },
-                          { label: 'Lembrete de Água', id: 'water' },
-                          { label: 'Resumo Semanal', id: 'weekly' },
-                        ].map(pref => (
-                          <div key={pref.id} className="flex items-center justify-between p-4 bg-white/3 rounded-2xl border border-white/5">
-                             <span className="text-xs text-white/80 font-bold">{pref.label}</span>
-                             <div className="w-10 h-5 bg-[#00ff88]/20 rounded-full relative">
-                                <div className="absolute right-1 top-1 w-3 h-3 bg-[#00ff88] rounded-full shadow-lg" />
-                             </div>
-                          </div>
-                        ))}
-                     </div>
-                  </div>
+                  <div className="space-y-6 pt-4 border-t border-[var(--color-border-subtle)]">
+                      <h4 className="text-[10px] font-black text-[var(--primary)] uppercase tracking-widest italic">Biometria & Preferências</h4>
+                      <div className="space-y-3">
+                         <div className="flex items-center justify-between p-4 bg-[var(--color-surface-hover)] rounded-2xl border border-[var(--color-border-subtle)]">
+                            <div className="flex flex-col">
+                               <span className="text-sm font-black text-[var(--color-text)] uppercase italic">Modo Elite</span>
+                               <span className="text-[9px] text-[var(--color-text-muted)] font-bold uppercase">Sem timer de descanso</span>
+                            </div>
+                            <button 
+                                onClick={() => {
+                                    const next = !isAdvancedMode;
+                                    setIsAdvancedMode(next);
+                                    localStorage.setItem('advanced_mode', String(next));
+                                }}
+                                className={`w-12 h-6 rounded-full transition-all relative ${isAdvancedMode ? 'bg-[var(--primary)]' : 'bg-[var(--outline)]'}`}
+                            >
+                                <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-all ${isAdvancedMode ? 'translate-x-6' : 'translate-x-0'}`} />
+                            </button>
+                         </div>
+
+                         <div className="flex items-center justify-between p-4 bg-[var(--color-surface-hover)] rounded-2xl border border-[var(--color-border-subtle)]">
+                            <div className="flex flex-col">
+                               <span className="text-sm font-black text-[var(--color-text)] uppercase italic">Tema da Lab</span>
+                               <span className="text-[9px] text-[var(--color-text-muted)] font-bold uppercase">{isDarkMode ? 'Dark Mode' : 'Light Mode'}</span>
+                            </div>
+                            <button 
+                                onClick={() => setIsDarkMode(!isDarkMode)}
+                                className={`w-12 h-6 rounded-full transition-all relative ${isDarkMode ? 'bg-[var(--secondary)]' : 'bg-[var(--primary)]'}`}
+                            >
+                                <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-all ${isDarkMode ? 'translate-x-6' : 'translate-x-0'}`} />
+                            </button>
+                         </div>
+
+                         <div className="space-y-1.5 pt-2">
+                            <label className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-widest ml-1">Foco de Engenharia</label>
+                            <select 
+                                value={focoMuscular} 
+                                onChange={(e) => {
+                                    setFocoMuscular(e.target.value);
+                                    localStorage.setItem('foco_muscular', e.target.value);
+                                }}
+                                className="w-full bg-[var(--color-overlay)] border border-[var(--color-border-subtle)] rounded-2xl px-4 py-3 text-sm text-[var(--color-text)] focus:border-[var(--primary)]/50 transition-all outline-none uppercase font-bold"
+                            >
+                                <option value="Equilibrado">Equilibrado (V-Taper)</option>
+                                <option value="Peitoral">Foco: Peitoral</option>
+                                <option value="Costas">Foco: Dorsais</option>
+                                <option value="Pernas">Foco: Pernas</option>
+                            </select>
+                         </div>
+                      </div>
+                   </div>
 
                   <div className="grid grid-cols-2 gap-3 pt-6">
                     <button 
@@ -5215,7 +5188,7 @@ export default function App() {
                         a.download = 'meu-progresso-shapeia.json';
                         a.click();
                       }}
-                      className="py-4 bg-white/5 border border-white/10 text-white text-[10px] font-black uppercase tracking-widest rounded-2xl hover:bg-white/10 transition-all"
+                      className="py-4 bg-[var(--color-overlay)] border border-[var(--color-border)] text-[var(--color-text)] text-[10px] font-black uppercase tracking-widest rounded-2xl hover:bg-[var(--color-border)] transition-all"
                     >
                       Exportar Dados
                     </button>
@@ -5234,10 +5207,10 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                <div className="p-6 bg-white/5">
+                <div className="p-6 bg-[var(--color-overlay)]">
                    <button 
                     onClick={handleSaveProfile}
-                    className="w-full py-4 bg-[#00ff88] text-black font-black uppercase tracking-[0.2em] rounded-2xl shadow-lg shadow-[#00ff88]/20 active:scale-95 transition-all"
+                    className="w-full py-4 bg-[#2563eb] text-white font-black uppercase tracking-[0.2em] rounded-2xl shadow-lg shadow-[#2563eb]/20 active:scale-95 transition-all"
                    >
                     Salvar Perfil
                    </button>
@@ -5260,55 +5233,55 @@ export default function App() {
                 initial={{ opacity: 0, y: 50 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 50 }}
-                className="relative w-full max-w-lg bg-[#0d1117] border border-white/10 rounded-[40px] overflow-hidden"
+                className="relative w-full max-w-lg bg-[var(--color-bg)] border border-[var(--color-border)] rounded-[40px] overflow-hidden"
               >
-                <div className="p-8 border-b border-white/5 flex items-center justify-between">
-                  <h3 className="text-lg font-black text-white italic uppercase tracking-widest">Novo Check-in Mensal</h3>
-                  <button onClick={() => setShowCheckInModal(false)} className="p-2 hover:bg-white/5 rounded-full"><X className="w-6 h-6 text-[#6b7280]" /></button>
+                <div className="p-8 border-b border-[var(--color-border-subtle)] flex items-center justify-between">
+                  <h3 className="text-lg font-black text-[var(--color-text)] italic uppercase tracking-widest">Novo Check-in Mensal</h3>
+                  <button onClick={() => setShowCheckInModal(false)} className="p-2 hover:bg-[var(--color-overlay)] rounded-full"><X className="w-6 h-6 text-[var(--color-text-muted)]" /></button>
                 </div>
                 <div className="p-8 space-y-8 max-h-[75vh] overflow-y-auto no-scrollbar">
                    {/* Photo Upload Area */}
                    <div className="grid grid-cols-3 gap-3">
                       {(['front', 'back', 'side'] as const).map(side => (
-                        <div key={side} onClick={() => alert(`Câmera nativa: Tirar foto de ${side === 'front' ? 'frente' : side === 'back' ? 'costas' : 'lado'}`)} className="aspect-[3/4] bg-white/5 border border-dashed border-white/10 rounded-2xl flex flex-col items-center justify-center gap-2 group hover:border-[#00ff88]/50 cursor-pointer transition-all">
-                           <Camera className="w-6 h-6 text-[#6b7280] group-hover:text-[#00ff88]" />
-                           <span className="text-[8px] font-black uppercase text-[#6b7280]">{side === 'front' ? 'Frente' : side === 'back' ? 'Costas' : 'Lado'}</span>
+                        <div key={side} onClick={() => alert(`Câmera nativa: Tirar foto de ${side === 'front' ? 'frente' : side === 'back' ? 'costas' : 'lado'}`)} className="aspect-[3/4] bg-[var(--color-overlay)] border border-dashed border-[var(--color-border)] rounded-2xl flex flex-col items-center justify-center gap-2 group hover:border-[#2563eb]/50 cursor-pointer transition-all">
+                           <Camera className="w-6 h-6 text-[var(--color-text-muted)] group-hover:text-[#2563eb]" />
+                           <span className="text-[8px] font-black uppercase text-[var(--color-text-muted)]">{side === 'front' ? 'Frente' : side === 'back' ? 'Costas' : 'Lado'}</span>
                         </div>
                       ))}
                    </div>
 
                    <div className="grid grid-cols-2 gap-6">
                       <div className="space-y-2">
-                         <label className="text-[10px] font-black text-[#6b7280] uppercase tracking-widest">Peso Atual (kg)</label>
+                         <label className="text-[10px] font-black text-[var(--color-text-muted)] uppercase tracking-widest">Peso Atual (kg)</label>
                          <input 
                           type="number" value={checkInWeight || ''} onChange={(e) => setCheckInWeight(Number(e.target.value))}
                           placeholder="00.0"
-                          className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white font-black text-lg focus:border-[#00ff88] transition-all outline-none"
+                          className="w-full bg-[var(--color-overlay)] border border-[var(--color-border)] rounded-2xl p-4 text-[var(--color-text)] font-black text-lg focus:border-[#2563eb] transition-all outline-none"
                          />
                       </div>
                       <div className="space-y-2">
-                         <label className="text-[10px] font-black text-[#6b7280] uppercase tracking-widest">BF% Manual (Opcional)</label>
+                         <label className="text-[10px] font-black text-[var(--color-text-muted)] uppercase tracking-widest">BF% Manual (Opcional)</label>
                          <input 
                           type="number" value={checkInBf} onChange={(e) => setCheckInBf(e.target.value ? Number(e.target.value) : "")}
                           placeholder="--"
-                          className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white font-black text-lg focus:border-[#ffb800] transition-all outline-none"
+                          className="w-full bg-[var(--color-overlay)] border border-[var(--color-border)] rounded-2xl p-4 text-[var(--color-text)] font-black text-lg focus:border-[#ffb800] transition-all outline-none"
                          />
                       </div>
                    </div>
 
                    <div className="space-y-2">
-                      <label className="text-[10px] font-black text-[#6b7280] uppercase tracking-widest">Anotações Livres</label>
+                      <label className="text-[10px] font-black text-[var(--color-text-muted)] uppercase tracking-widest">Anotações Livres</label>
                       <textarea 
                         value={checkInNotes} onChange={(e) => setCheckInNotes(e.target.value)}
                         placeholder="Como você se sente? Notas sobre força, sono, dieta..."
-                        className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-sm text-white/80 h-32 focus:border-[#00ff88] transition-all outline-none resize-none"
+                        className="w-full bg-[var(--color-overlay)] border border-[var(--color-border)] rounded-2xl p-4 text-sm text-[var(--color-text)]/80 h-32 focus:border-[#2563eb] transition-all outline-none resize-none"
                       />
                    </div>
                 </div>
-                <div className="p-8 bg-white/5">
+                <div className="p-8 bg-[var(--color-overlay)]">
                    <button 
                     onClick={handleSaveCheckIn}
-                    className="w-full py-5 bg-[#00ff88] text-black font-black text-sm uppercase tracking-[0.3em] rounded-3xl shadow-xl shadow-[#00ff88]/20 hover:scale-[1.02] active:scale-[0.98] transition-all"
+                    className="w-full py-5 bg-[#2563eb] text-white font-black text-sm uppercase tracking-[0.3em] rounded-3xl shadow-xl shadow-[#2563eb]/20 hover:scale-[1.02] active:scale-[0.98] transition-all"
                    >
                     Salvar Check-in
                    </button>

@@ -11,6 +11,18 @@ export interface ShapeAnalysis {
     description: string;
     imbalances: string[];
   };
+  posture?: {
+    detected: boolean;
+    issue: string;
+    severity: 'low' | 'medium' | 'high';
+    correction: string;
+    corrective_exercise: {
+      nome: string;
+      series: string;
+      repeticoes: string;
+      why: string;
+    }
+  };
   analysis: {
     strengths: string[];
     weaknesses: string[];
@@ -88,6 +100,7 @@ export interface WorkoutHistoryItem {
 export interface ShapeAnalysisHistoryItem extends ShapeAnalysis {
   id: string;
   date: string;
+  timestamp?: number;
   category: 'Iniciante' | 'Fitness' | 'Atlético' | 'Elite';
   frontPhoto?: string;
 }

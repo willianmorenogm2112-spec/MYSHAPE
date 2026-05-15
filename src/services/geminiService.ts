@@ -28,7 +28,7 @@ const safeParseJSON = (text: string) => {
   }
 };
 
-export const analyzeShape = async (images: { front?: string; back?: string; side?: string }, profile: { weight: number; goal: string; age?: number; gender?: string; gymLevel?: string }, isPump: boolean = false) => {
+export const analyzeShape = async (images: { front?: string; back?: string; side?: string }, profile: { weight: number; height?: number; goal: string; age?: number; gender?: string; gymLevel?: string }, isPump: boolean = false, model: 'fast' | 'best' = 'fast') => {
   if (!API_KEY) {
     throw new Error("API Key not found. Please add GEMINI_API_KEY to secrets.");
   }
@@ -43,6 +43,7 @@ Ao receber as fotos, gere uma análise completa, técnica, detalhada e personali
 Dados do usuário:
 - Sexo e idade: ${profile.gender || 'Não informado'}, ${profile.age || 'Não informado'} anos
 - Peso: ${profile.weight}kg
+- Altura: ${profile.height ? `${profile.height}cm` : 'Não informado'}
 - Objetivo principal: ${profile.goal}
 - Nível de experiência: ${profile.gymLevel || 'Não informado'}
 
@@ -88,36 +89,7 @@ ${definitivePrompt}
 
 ${isPump ? "ESTA É UMA FOTO PÓS-TREINO (PUMP). Considere a vascularização e o volume temporário." : ""}
 
-IMPORTANTE: Para integrar perfeitamente com a UI do aplicativo, você deve retornar a resposta ESTRITAMENTE em formato JSON perfeitamente válido. Faça o escape de todas as aspas dentro de strings usando \\".
-
-Esquema JSON EXATO exigido:
-{
-  "overallScore": number (nota de 0-100 refletindo a Etapa 6),
-  "bfEstimate": number (estimativa de percentual de gordura),
-  "metrics": {
-    "volume": number (0-100),
-    "definition": number (0-100),
-    "symmetry": number (0-100),
-    "density": number (0-100)
-  },
-  "proportions": {
-    "description": string (breve),
-    "imbalances": string[] (lista de assimetrias encontradas)
-  },
-  "analysis": {
-    "strengths": string[],
-    "weaknesses": string[],
-    "summary": string
-  },
-  "recommendations": {
-    "trainingFocus": string,
-    "correctiveExercises": string[],
-    "dietPhase": "Cutting" | "Bulking" | "Recomposição",
-    "macros": { "calories": number, "protein": number, "carbs": number, "fats": number },
-    "tips": string[]
-  },
-  "fullMarkdownReport": string (TEXTO COMPLETO DO RELATÓRIO AQUI. Use formatacão Markdown. IMPORTANTE: ESCAPE CORRETAMENTE O TEXTO PARA SER VÁLIDO EM JSON (use \\n para quebras de linha e \\" para aspas!). Escreva a Etapa 1 até a 6 com riqueza técnica.)
-}`
+Responda em formato JSON seguindo a estrutura técnica solicitada.`
     }
   ];
 
@@ -137,11 +109,98 @@ Esquema JSON EXATO exigido:
     } as any);
   }
 
+  const aiModel = model === 'best' ? "gemini-3.1-pro-preview" : "gemini-3-flash-preview";
+
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-pro-preview",
-    contents: [{ parts }],
+    model: aiModel,
+    contents: { parts },
     config: {
       responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          overallScore: { type: Type.NUMBER },
+          bfEstimate: { type: Type.NUMBER },
+          metrics: {
+            type: Type.OBJECT,
+            properties: {
+              volume: { type: Type.NUMBER },
+              definition: { type: Type.NUMBER },
+              symmetry: { type: Type.NUMBER },
+              density: { type: Type.NUMBER }
+            },
+            required: ["volume", "definition", "symmetry", "density"]
+          },
+          proportions: {
+            type: Type.OBJECT,
+            properties: {
+              description: { type: Type.STRING },
+              imbalances: { type: Type.ARRAY, items: { type: Type.STRING } }
+            },
+            required: ["description", "imbalances"]
+          },
+          analysis: {
+            type: Type.OBJECT,
+            properties: {
+              strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
+              weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } },
+              summary: { type: Type.STRING }
+            },
+            required: ["strengths", "weaknesses", "summary"]
+          },
+          posture: {
+            type: Type.OBJECT,
+            properties: {
+              detected: { type: Type.BOOLEAN },
+              issue: { type: Type.STRING },
+              severity: { type: Type.STRING },
+              correction: { type: Type.STRING },
+              corrective_exercise: {
+                type: Type.OBJECT,
+                properties: {
+                  nome: { type: Type.STRING },
+                  series: { type: Type.STRING },
+                  repeticoes: { type: Type.STRING },
+                  why: { type: Type.STRING }
+                },
+                required: ["nome", "series", "repeticoes", "why"]
+              }
+            },
+            required: ["detected", "issue", "severity", "correction", "corrective_exercise"]
+          },
+          recommendations: {
+            type: Type.OBJECT,
+            properties: {
+              trainingFocus: { type: Type.STRING },
+              correctiveExercises: { type: Type.ARRAY, items: { type: Type.STRING } },
+              dietPhase: { type: Type.STRING },
+              macros: {
+                type: Type.OBJECT,
+                properties: {
+                  calories: { type: Type.NUMBER },
+                  protein: { type: Type.NUMBER },
+                  carbs: { type: Type.NUMBER },
+                  fats: { type: Type.NUMBER }
+                },
+                required: ["calories", "protein", "carbs", "fats"]
+              },
+              tips: { type: Type.ARRAY, items: { type: Type.STRING } }
+            },
+            required: ["trainingFocus", "correctiveExercises", "dietPhase", "macros", "tips"]
+          },
+          fullMarkdownReport: { type: Type.STRING }
+        },
+        required: [
+          "overallScore", 
+          "bfEstimate", 
+          "metrics", 
+          "proportions", 
+          "analysis", 
+          "posture",
+          "recommendations", 
+          "fullMarkdownReport"
+        ]
+      }
     }
   });
 
@@ -233,10 +292,11 @@ export const generatePersonalizedTraining = async (analysis: any, profile: any, 
 export const analyzeFoodPhoto = async (image: string) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-flash-latest",
-    contents: [
-      { inlineData: { data: image.split(",")[1], mimeType: "image/jpeg" } },
-      { text: `Analise esta foto de comida. Identifique os alimentos, estime o peso de cada um e calcule os macros.
+    model: "gemini-3-flash-preview",
+    contents: {
+      parts: [
+        { inlineData: { data: image.split(",")[1], mimeType: "image/jpeg" } },
+        { text: `Analise esta foto de comida. Identifique os alimentos, estime o peso de cada um e calcule os macros.
       Retorne estritamente no formato JSON seguindo este esquema:
       {
         "items": [
@@ -257,7 +317,8 @@ export const analyzeFoodPhoto = async (image: string) => {
         }
       }
       USE PORTUGUÊS DO BRASIL.` }
-    ],
+      ],
+    },
     config: {
       responseMimeType: "application/json",
     }
@@ -268,10 +329,11 @@ export const analyzeFoodPhoto = async (image: string) => {
 export const analyzeExerciseVideo = async (videoData: string) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-flash-latest",
-    contents: [
-      { inlineData: { data: videoData.split(",")[1], mimeType: "video/mp4" } },
-      { text: `Analise a biomecânica deste exercício. Identifique erros de execução e forneça correções pontuais.
+    model: "gemini-3-flash-preview",
+    contents: {
+      parts: [
+        { inlineData: { data: videoData.split(",")[1], mimeType: "video/mp4" } },
+        { text: `Analise a biomecânica deste exercício. Identifique erros de execução e forneça correções pontuais.
       Retorne estritamente no formato JSON seguindo este esquema:
       {
         "exerciseName": "Agachamento Livre",
@@ -281,7 +343,8 @@ export const analyzeExerciseVideo = async (videoData: string) => {
         "summary": "Sua execução está boa, mas precisa de ajustes na estabilidade do core e joelhos."
       }
       USE PORTUGUÊS DO BRASIL.` }
-    ],
+      ],
+    },
     config: {
       responseMimeType: "application/json",
     }
@@ -336,7 +399,7 @@ export const generateMealPlan = async (isPremium: boolean, data: any) => {
   USE PORTUGUÊS DO BRASIL.`;
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-pro-preview",
+    model: "gemini-3-flash-preview",
     contents: basePrompt,
     config: {
       responseMimeType: "application/json",
@@ -386,8 +449,10 @@ export const generateTrainingPlan = async (isPremium: boolean, data: any) => {
   
   USE PORTUGUÊS DO BRASIL.`;
 
+  const aiModel = data.generationModel === 'best' ? "gemini-3.1-pro-preview" : "gemini-3-flash-preview";
+
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-pro-preview",
+    model: aiModel,
     contents: basePrompt,
     config: {
       responseMimeType: "application/json",
