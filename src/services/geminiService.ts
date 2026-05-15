@@ -5,7 +5,7 @@ const API_KEY =
   (typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) || 
   (import.meta as any).env.VITE_GEMINI_API_KEY || 
   (import.meta as any).env.GEMINI_API_KEY || 
-  "AIzaSyAF1t8NzyiSUV82539KyCohxZMOo-SGRP8"; // Updated user API key
+  "AIzaSyBU94wUEurctYdrw3qI8_qMAUr3EFxVl9Y"; // User API key
 
 if (!API_KEY) {
   console.warn("Gemini API Key not found. Please check your .env or Vercel environment variables.");
@@ -119,7 +119,7 @@ Responda em formato JSON seguindo a estrutura técnica solicitada.`
     } as any);
   }
 
-  const aiModel = model === 'best' ? "gemini-3.1-pro-preview" : "gemini-1.5-flash";
+  const aiModel = model === 'best' ? "gemini-2.5-pro" : "gemini-2.5-flash";
 
   try {
     const response = await ai.models.generateContent({
@@ -230,7 +230,7 @@ export const projectShape = async (image: string, type: 'fat-loss' | 'muscle-gai
     : "Edite esta imagem para simular como o corpo ficaria com +5kg de massa muscular magra, aumentando o volume dos ombros, peito e braços, mantendo a definição.";
 
   const response = await ai.models.generateContent({
-    model: 'gemini-flash-latest',
+    model: 'gemini-2.0-flash',
     contents: {
       parts: [
         { inlineData: { data: image.split(",")[1], mimeType: "image/jpeg" } },
@@ -250,7 +250,7 @@ export const projectShape = async (image: string, type: 'fat-loss' | 'muscle-gai
 export const generatePersonalizedTraining = async (analysis: any, profile: any, quizAnswers: any) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-flash-latest",
+    model: "gemini-2.0-flash",
     contents: `Você é um treinador de elite. Com base na análise do físico: ${JSON.stringify(analysis)} 
     e no perfil do usuário: ${JSON.stringify(profile)}, crie um plano de treinamento semanal PREMIUM e ESPECÍFICO.
     Respostas do Quiz do Usuário: ${JSON.stringify(quizAnswers)}
@@ -302,7 +302,7 @@ export const generatePersonalizedTraining = async (analysis: any, profile: any, 
 export const analyzeFoodPhoto = async (image: string) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: "gemini-2.0-flash",
     contents: {
       parts: [
         { inlineData: { data: image.split(",")[1], mimeType: "image/jpeg" } },
@@ -339,7 +339,7 @@ export const analyzeFoodPhoto = async (image: string) => {
 export const analyzeExerciseVideo = async (videoData: string) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: "gemini-2.0-flash",
     contents: {
       parts: [
         { inlineData: { data: videoData.split(",")[1], mimeType: "video/mp4" } },
@@ -409,7 +409,7 @@ export const generateMealPlan = async (isPremium: boolean, data: any) => {
   USE PORTUGUÊS DO BRASIL.`;
 
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: "gemini-2.0-flash",
     contents: basePrompt,
     config: {
       responseMimeType: "application/json",
@@ -459,7 +459,7 @@ export const generateTrainingPlan = async (isPremium: boolean, data: any) => {
   
   USE PORTUGUÊS DO BRASIL.`;
 
-  const aiModel = data.generationModel === 'best' ? "gemini-3.1-pro-preview" : "gemini-1.5-flash";
+  const aiModel = data.generationModel === 'best' ? "gemini-2.5-pro" : "gemini-2.5-flash";
 
   const response = await ai.models.generateContent({
     model: aiModel,
@@ -475,7 +475,7 @@ export const generateTrainingPlan = async (isPremium: boolean, data: any) => {
 export const getExerciseDetails = async (exerciseName: string) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-flash-latest",
+    model: "gemini-2.0-flash",
     contents: `Explique a execução perfeita do exercício "${exerciseName}".
     Inclua:
     1. Posição Inicial
@@ -490,7 +490,7 @@ export const getExerciseDetails = async (exerciseName: string) => {
 export const generateShoppingList = async (mealPlan: any) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-flash-latest",
+    model: "gemini-2.0-flash",
     contents: `Com base no plano de refeições: ${JSON.stringify(mealPlan)}, gere uma lista de compras inteligente organizada por categorias (Proteínas, Carboidratos, Gorduras, Vegetais/Frutas, Outros).
     Estime as quantidades necessárias para uma semana.
     
@@ -517,7 +517,7 @@ export const generateShoppingList = async (mealPlan: any) => {
 export const generateRouteDayPlan = async (profile: any, dietAnswers: any) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-flash-latest",
+    model: "gemini-2.0-flash",
     contents: `O usuário vai passar o dia fora de casa (Dia de Rota). Com base no perfil: ${JSON.stringify(profile)} e objetivo: ${dietAnswers.objective}, forneça sugestões de refeições práticas que podem ser encontradas em restaurantes, self-services ou lojas de conveniência, mantendo a meta calórica e de macros.
     
     Retorne os dados estritamente no formato JSON seguindo este esquema:
@@ -548,7 +548,7 @@ export const generateRouteDayPlan = async (profile: any, dietAnswers: any) => {
 export const chatWithCoach = async (message: string, context?: any) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-flash-latest",
+    model: "gemini-2.0-flash",
     contents: `Você é o motor do Shape Analyzer Pro. Sua missão é manter a interface limpa, funcional e converter o usuário para o Premium.
     Responda à dúvida do usuário de forma técnica e motivadora SEMPRE EM PORTUGUÊS DO BRASIL. 
     
@@ -566,7 +566,7 @@ export const chatWithCoach = async (message: string, context?: any) => {
 export const generateCorrectivePlan = async (analysis: any, profile: any) => {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-flash-latest",
+    model: "gemini-2.0-flash",
     contents: `Você é um nutricionista e treinador esportivo. Com base na análise do físico: ${JSON.stringify(analysis)} e perfil: ${JSON.stringify(profile)}, emita um PLANO CORRETIVO INTEGRADO.
     Foque especificamente em corrigir assimetrias musculares reveladas na análise.
     Retorne os dados estritamente no formato JSON seguindo este esquema:
